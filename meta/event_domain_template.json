@@ -1,0 +1,41 @@
+{
+  "_comment": "Minimal scaffold for a new hazard / event domain. Copy to e.g. meta/flood_india_meta.json and fill in.",
+  "schema_version": "1.0",
+  "domain": {
+    "id": "CHANGE_ME",
+    "title": "CHANGE_ME",
+    "description": "",
+    "related_scripts": []
+  },
+  "data_binding": {
+    "input_formats": ["pilot_results_csv"],
+    "pilot_csv": {
+      "filter_hwc_events": {
+        "column": "CHANGE_EVENT_FLAG_COLUMN",
+        "true_values": ["true", "True", "1", true]
+      },
+      "geometry": {
+        "longitude_column": "final_lon",
+        "latitude_column": "final_lat",
+        "crs": "EPSG:4326"
+      },
+      "properties_suggested": []
+    }
+  },
+  "taxonomy": {
+    "primary_class": {
+      "description": "Main categorical field for maps (e.g. event_type, flood_stage).",
+      "allowed_values": []
+    }
+  },
+  "map_style": {
+    "category_field": "map_category",
+    "merge_groups": [],
+    "singleton_event_types": [],
+    "fallback_category": "other",
+    "colors_hex": {}
+  },
+  "generalization": {
+    "example_future_domains": []
+  }
+}

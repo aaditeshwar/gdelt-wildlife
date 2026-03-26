@@ -1,0 +1,155 @@
+{
+  "schema_version": "1.0",
+  "domain": {
+    "id": "hwc_india",
+    "title": "Human–wildlife conflict (India)",
+    "description": "Enriched article extracts with LLM labels and coordinates (data/hwc_final_report*.csv). Used by scripts/gdelt-get-full-text.py and scripts/pilot_csv_to_geojson.py.",
+    "related_scripts": [
+      "scripts/gdelt-get-full-text.py",
+      "scripts/pilot_csv_to_geojson.py"
+    ]
+  },
+  "data_binding": {
+    "input_formats": ["pilot_results_csv"],
+    "pilot_csv": {
+      "filter_hwc_events": {
+        "column": "is_hwc_event",
+        "true_values": ["true", "True", "TRUE", "1"]
+      },
+      "geometry": {
+        "longitude_column": "final_lon",
+        "latitude_column": "final_lat",
+        "crs": "EPSG:4326"
+      },
+      "properties_suggested": [
+        "url",
+        "title",
+        "pub_date",
+        "species",
+        "event_type",
+        "event_date",
+        "primary_location",
+        "location_type",
+        "confidence",
+        "geocode_source",
+        "humans_killed",
+        "humans_injured",
+        "animals_killed",
+        "animals_injured",
+        "location_notes",
+        "gdelt_location_match",
+        "fetch_method"
+      ]
+    }
+  },
+  "taxonomy": {
+    "event_type": {
+      "description": "Primary incident type from LLM (EXTRACTION_PROMPT in gdelt-get-full-text.py).",
+      "allowed_values": [
+        "attack_on_human",
+        "human_killed",
+        "human_injured",
+        "crop_raid",
+        "livestock_kill",
+        "animal_killed_by_human",
+        "animal_injured",
+        "road_collision",
+        "corridor_conflict",
+        "other"
+      ]
+    },
+    "species": {
+      "description": "Lowercase common name; includes other (specify) from LLM.",
+      "examples": [
+        "elephant",
+        "tiger",
+        "leopard",
+        "bear",
+        "wild boar",
+        "crocodile",
+        "snake",
+        "wolf",
+        "nilgai",
+        "gaur",
+        "rhino",
+        "monkey",
+        "other (specify)"
+      ]
+    },
+    "location_type": {
+      "allowed_values": [
+        "village",
+        "town",
+        "forest_range",
+        "forest_division",
+        "taluka",
+        "district",
+        "state",
+        "unknown"
+      ]
+    },
+    "confidence": {
+      "allowed_values": ["high", "medium", "low"]
+    },
+    "gdelt_geography": {
+      "notes": "GDELT-derived columns (gdelt_lat, all_india_locations) are district-level hints; final_lat/lon may be Google or GDELT fallback."
+    }
+  },
+  "map_style": {
+    "category_field": "map_category",
+    "description": "map_category is computed: merged groups below, else raw event_type, else unknown.",
+    "merge_groups": [
+      {
+        "id": "human_harm",
+        "label": "Human harmed (attack / injured / killed)",
+        "event_types": [
+          "attack_on_human",
+          "human_injured",
+          "human_killed"
+        ]
+      },
+      {
+        "id": "animal_harm",
+        "label": "Animal harmed by people (injured / killed)",
+        "event_types": ["animal_injured", "animal_killed_by_human"]
+      }
+    ],
+    "singleton_event_types": [
+      "crop_raid",
+      "livestock_kill",
+      "road_collision",
+      "corridor_conflict"
+    ],
+    "fallback_category": "other",
+    "colors_hex": {
+      "human_harm": "#d73027",
+      "animal_harm": "#fc8d59",
+      "crop_raid": "#1a9850",
+      "livestock_kill": "#4575b4",
+      "road_collision": "#8073ac",
+      "corridor_conflict": "#fee08b",
+      "other": "#737373",
+      "unknown": "#bdbdbd"
+    }
+  },
+  "generalization": {
+    "purpose": "Copy this file, change domain + taxonomy + map_style, and point pilot_csv_to_geojson.py --meta at the new JSON for other hazard domains.",
+    "example_future_domains": [
+      {
+        "id": "rural_flood_in",
+        "title": "Rural floods (India)",
+        "taxonomy_focus": ["flood_depth_class", "affected_crops", "season"]
+      },
+      {
+        "id": "ag_drought_in",
+        "title": "Agricultural drought / water stress",
+        "taxonomy_focus": ["severity", "crop_stage", "irrigation_failure"]
+      },
+      {
+        "id": "heat_wave_in",
+        "title": "Heat wave health / labour impacts",
+        "taxonomy_focus": ["alert_level", "urban_rural"]
+      }
+    ]
+  }
+}
