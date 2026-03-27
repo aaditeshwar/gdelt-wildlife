@@ -42,20 +42,10 @@ import pandas as pd
 from google.cloud import bigquery
 from tqdm import tqdm
 
-# ── Theme classification ───────────────────────────────────────────────────────
-
-WILDLIFE_THEMES = {
-    "ENV_WILDLIFE", "ENV_POACHING", "ENV_SPECIESENDANGERED",
-    "ENV_SPECIESEXTINCT", "ENV_FORESTS", "ENV_DEFORESTATION",
-    "WB_2069_WILDLIFE_MANAGEMENT", "WB_678_FORESTS",
-    "NATURAL_DISASTER",                     # sometimes covers animal events
-}
-CONFLICT_THEMES = {
-    "KILL", "AFFECT", "WOUND",
-    "CRISISLEX_T03_DEAD", "CRISISLEX_T04_INJURED",
-    "TAX_FNCACT_ATTACK",
-}
-ALL_TARGET_THEMES = WILDLIFE_THEMES | CONFLICT_THEMES
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+from domain_meta import get_gkg_geography, get_gkg_theme_sets, load_domain_meta  # noqa: E402
 
 # ── GKG V2Locations parser ─────────────────────────────────────────────────────
 # Format per location block: TYPE#NAME#COUNTRYCODE#ADM1CODE#LAT#LON#FEATUREID
@@ -86,19 +76,24 @@ def parse_v2locations(loc_string: str) -> list[dict]:
     return results
 
 
-def india_locations(locs: list[dict]) -> list[dict]:
-    return [l for l in locs
-            if l.get("country") in ("IN", "IND")
-            and l.get("lat") is not None
-            and l.get("lon") is not None]
+def india_locations(locs: list[dict], country_codes: tuple[str, ...]) -> list[dict]:
+    return [
+        l for l in locs
+        if l.get("country") in country_codes
+        and l.get("lat") is not None
+        and l.get("lon") is not None
+    ]
 
 
-def best_india_location(locs: list[dict]) -> dict | None:
-    india = india_locations(locs)
+def best_india_location(
+    locs: list[dict],
+    country_codes: tuple[str, ...],
+    subnational_types: set[int],
+) -> dict | None:
+    india = india_locations(locs, country_codes)
     if not india:
         return None
-    # Prefer subnational (type 3,4,5) over country-level (type 1)
-    sub = [l for l in india if l["loc_type"] in (3, 4, 5)]
+    sub = [l for l in india if l["loc_type"] in subnational_types]
     return sub[0] if sub else india[0]
 
 
@@ -111,9 +106,13 @@ def parse_themes(theme_str: str) -> set[str]:
             if item.strip()}
 
 
-def score_themes(themes: set[str]) -> tuple[int, list[str]]:
-    w = themes & WILDLIFE_THEMES
-    c = themes & CONFLICT_THEMES
+def score_themes(
+    themes: set[str],
+    wildlife_themes: set[str],
+    conflict_themes: set[str],
+) -> tuple[int, list[str]]:
+    w = themes & wildlife_themes
+    c = themes & conflict_themes
     score = (1 if w else 0) + (2 if c else 0)
     return score, sorted(w | c)
 
@@ -200,9 +199,21 @@ def build_query(url_table: str, start_date: str, end_date: str) -> str:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main(project: str, input_csv: str, out_enriched: str,
-         out_geocoded: str, out_hc: str, out_unmatched: str,
-         dry_run: bool, url_table_reuse: str | None = None):
+def main(
+    project: str,
+    input_csv: str,
+    out_enriched: str,
+    out_geocoded: str,
+    out_hc: str,
+    out_unmatched: str,
+    dry_run: bool,
+    meta_path: str,
+    url_table_reuse: str | None = None,
+):
+
+    meta = load_domain_meta(meta_path)
+    wildlife_themes, conflict_themes, hc_min = get_gkg_theme_sets(meta)
+    country_codes, subnational_types = get_gkg_geography(meta)
 
     # ── Load articles ──────────────────────────────────────────────────────
     print(f"\nLoading: {input_csv}")
@@ -273,9 +284,9 @@ def main(project: str, input_csv: str, out_enriched: str,
     for _, row in tqdm(gkg_df.iterrows(), total=len(gkg_df), unit="article"):
         locs   = parse_v2locations(row.get("V2Locations", ""))
         themes = parse_themes(row.get("V2Themes", ""))
-        score, matched = score_themes(themes)
-        best   = best_india_location(locs)
-        india  = india_locations(locs)
+        score, matched = score_themes(themes, wildlife_themes, conflict_themes)
+        best   = best_india_location(locs, country_codes, subnational_types)
+        india  = india_locations(locs, country_codes)
 
         rows.append({
             "DocumentIdentifier": row["DocumentIdentifier"],
@@ -314,7 +325,7 @@ def main(project: str, input_csv: str, out_enriched: str,
     geocoded.to_csv(out_geocoded, index=False)
 
     high_conf = enriched[enriched["theme_score"].notna() &
-                         (enriched["theme_score"] >= 3)]
+                         (enriched["theme_score"] >= hc_min)]
     high_conf.to_csv(out_hc, index=False)
 
     unmatched = enriched[enriched["gkg_found"] == False]
@@ -361,12 +372,18 @@ Next steps:
 
 
 if __name__ == "__main__":
-    _data = Path(__file__).resolve().parent.parent / "data"
+    _root = Path(__file__).resolve().parent.parent
+    _data = _root / "data"
     p = argparse.ArgumentParser(
         description="Enrich GDELT article URLs with GKG data via BigQuery"
     )
     p.add_argument("--project",   required=True,
                    help="GCP project ID (e.g. my-gcp-project-123)")
+    p.add_argument(
+        "--meta",
+        default=str(_root / "meta" / "hwc_india_conflict_meta.json"),
+        help="Domain meta (gkg_theme_sets, gkg_geography)",
+    )
     p.add_argument("--input",     default=str(_data / "hwc_urls.csv"),
                    help="Input CSV from gdelt-fetch-urls.py")
     p.add_argument("--enriched",  default=str(_data / "hwc_urls_enriched.csv"))
@@ -395,5 +412,6 @@ if __name__ == "__main__":
         out_hc      = args.high_conf,
         out_unmatched=args.unmatched,
         dry_run     = args.dry_run,
+        meta_path   = args.meta,
         url_table_reuse=args.url_table,
     )

@@ -1,0 +1,15 @@
+# GDELT HWC pipeline — Python 3.10+ recommended (gdeltdoc requires 3.10+)
+#
+# Core (fetch, local GKG enrich, full-text, GeoJSON)
+pandas>=2.0.0
+requests>=2.28.0
+tqdm>=4.65.0
+trafilatura>=1.6.0
+gdeltdoc>=1.0.0
+
+# BigQuery enrichment (gdelt-enrich-urls-bigquery.py only)
+google-cloud-bigquery>=3.10.0
+db-dtypes>=1.2.0
+
+# Selenium retry path (gdelt-get-full-text.py --retry-failed-from only)
+selenium>=4.15.0

@@ -1,5 +1,5 @@
 {
-  "_comment": "Minimal scaffold for a new hazard / event domain. Copy to e.g. meta/flood_india_meta.json and fill in.",
+  "_comment": "Minimal scaffold for a new hazard / event domain. Copy to e.g. meta/flood_india_meta.json and fill in. See meta/hwc_india_conflict_meta.json for a complete example.",
   "schema_version": "1.0",
   "domain": {
     "id": "CHANGE_ME",
@@ -7,12 +7,54 @@
     "description": "",
     "related_scripts": []
   },
+  "gdelt_doc_fetch": {
+    "_comment": "Used by scripts/gdelt-fetch-urls.py",
+    "keywords": ["keyword one", "keyword two"],
+    "country": "IN",
+    "language": "English",
+    "max_records": 250,
+    "sleep_between_queries_seconds": 3,
+    "years_back": 5,
+    "window_months": 3,
+    "summary_banner": "GDELT DOC fetch",
+    "summary_title": "GDELT summary"
+  },
+  "gkg_theme_sets": {
+    "_comment": "Used by gdelt-enrich-urls*.py — GKG V2Themes codes",
+    "wildlife_themes": ["ENV_WILDLIFE"],
+    "conflict_themes": ["KILL", "AFFECT"],
+    "high_confidence_theme_score_min": 3,
+    "theme_score_guide": {
+      "0": "No theme match",
+      "1": "First set only",
+      "2": "Second set only",
+      "3": "Both sets"
+    }
+  },
+  "gkg_geography": {
+    "_comment": "GKG V2Locations country codes and loc_type detail levels",
+    "location_country_codes": ["IN", "IND"],
+    "subnational_loc_types": [3, 4, 5]
+  },
+  "llm_extraction": {
+    "_comment": "Prefer system_prompt_lines / extraction_prompt_lines (array) to avoid JSON escaping issues in long strings. extraction_prompt must include {pub_date} {url} {gdelt_locations} {article_text}. Use doubled braces {{ }} for literal JSON braces in the example block.",
+    "system_prompt_lines": ["You are an analyst. Respond with JSON only."],
+    "extraction_prompt_lines": [
+      "Publication date: {pub_date}",
+      "URL: {url}",
+      "GDELT candidate locations: {gdelt_locations}",
+      "",
+      "Article text:",
+      "{article_text}"
+    ],
+    "extraction_prompt_placeholders": ["pub_date", "url", "gdelt_locations", "article_text"]
+  },
   "data_binding": {
     "input_formats": ["pilot_results_csv"],
     "pilot_csv": {
       "filter_hwc_events": {
         "column": "CHANGE_EVENT_FLAG_COLUMN",
-        "true_values": ["true", "True", "1", true]
+        "true_values": ["true", "True", "1"]
       },
       "geometry": {
         "longitude_column": "final_lon",

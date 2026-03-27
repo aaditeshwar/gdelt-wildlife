@@ -1,6 +1,6 @@
 """
-Pilot CSV → GeoJSON (HWC points) + optional QGIS QML style
-============================================================
+CSV → GeoJSON (HWC points) + optional QGIS QML style
+===================================================
 Reads data/hwc_final_report_updated.csv (or data/hwc_final_report.csv), keeps rows where
 is_hwc_event is true, valid final_lon/final_lat, and writes a Point GeoJSON.
 
@@ -8,9 +8,9 @@ Category field ``map_category`` follows meta/hwc_india_conflict_meta.json
 (merged event types for styling).
 
 Usage:
-    python scripts/pilot_csv_to_geojson.py
-    python scripts/pilot_csv_to_geojson.py --input data/hwc_final_report_updated.csv --output outputs/hwc_points.geojson
-    python scripts/pilot_csv_to_geojson.py --meta meta/hwc_india_conflict_meta.json --write-qml outputs/hwc_india_points.qml
+    python scripts/convert_csv_to_geojson.py
+    python scripts/convert_csv_to_geojson.py --input data/hwc_final_report_updated.csv --output outputs/hwc_points.geojson
+    python scripts/convert_csv_to_geojson.py --meta meta/hwc_india_conflict_meta.json --write-qml outputs/hwc_india_points.qml
 """
 
 from __future__ import annotations
@@ -171,11 +171,11 @@ def _xml_escape(s: str) -> str:
 
 def main() -> None:
     root = Path(__file__).resolve().parent.parent
-    p = argparse.ArgumentParser(description="Convert pilot HWC CSV to GeoJSON points + optional QML")
+    p = argparse.ArgumentParser(description="Convert extraction CSV to GeoJSON points + optional QML")
     p.add_argument(
         "--input",
         default=str(root / "data" / "hwc_final_report_updated.csv"),
-        help="Pilot CSV (default: data/hwc_final_report_updated.csv)",
+        help="Input CSV (default: data/hwc_final_report_updated.csv)",
     )
     p.add_argument(
         "--meta",

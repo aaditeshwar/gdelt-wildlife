@@ -41,9 +41,9 @@ Output (under data/ by default):
 import argparse
 import io
 import os
+import sys
 import time
 import zipfile
-from pathlib import Path
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -52,28 +52,20 @@ import pandas as pd
 import requests
 from tqdm import tqdm
 
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+from domain_meta import (  # noqa: E402
+    get_gkg_geography,
+    get_gkg_theme_sets,
+    load_domain_meta,
+)
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 MASTERFILE_URL = "http://data.gdeltproject.org/gdeltv2/masterfilelist.txt"
 GKG_BASE_URL   = "http://data.gdeltproject.org/gdeltv2/"
 CACHE_DIR      = Path("gkg_cache")   # downloaded GKG files cached here
-
-# GKG themes that indicate wildlife / conflict / harm events
-WILDLIFE_THEMES = {
-    "ENV_WILDLIFE", "ENV_POACHING", "ENV_SPECIESENDANGERED",
-    "ENV_SPECIESEXTINCT", "ENV_FORESTS", "ENV_DEFORESTATION",
-    "WB_2069_WILDLIFE_MANAGEMENT", "WB_678_FORESTS",
-}
-CONFLICT_THEMES = {
-    "KILL", "AFFECT", "WOUND", "CRISISLEX_CRISISLEXREC",
-    "CRISISLEX_T03_DEAD", "CRISISLEX_T04_INJURED",
-    "TAX_FNCACT_ATTACK", "SECURITY_SERVICES",
-}
-ALL_TARGET_THEMES = WILDLIFE_THEMES | CONFLICT_THEMES
-
-# Location type codes (GDELT GKG codebook):
-# 1=Country, 2=US State, 3=US City, 4=World City, 5=World State(ADM1)
-SUBNATIONAL_TYPES = {3, 4, 5}   # anything more specific than country level
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -85,6 +77,21 @@ GKG_COLUMNS = [
     "RelatedImages", "SocialImageEmbeds", "SocialVideoEmbeds",
     "Quotations", "AllNames", "Amounts", "TranslationInfo", "Extras"
 ]
+
+
+def _gkg_cell_str(val: object, max_len: int | None = None) -> str:
+    """Normalize a GKG dataframe cell to str; None/NaN become \"\". Optional max length."""
+    if val is None:
+        return ""
+    try:
+        if pd.isna(val):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    s = str(val)
+    if max_len is not None and len(s) > max_len:
+        return s[:max_len]
+    return s
 
 
 def parse_v2locations(loc_string: str) -> list[dict]:
@@ -117,25 +124,32 @@ def parse_v2locations(loc_string: str) -> list[dict]:
     return locations
 
 
-def india_locations(loc_list: list[dict]) -> list[dict]:
-    """Filter location list to India entries with valid coordinates."""
+def india_locations(
+    loc_list: list[dict],
+    country_codes: tuple[str, ...],
+) -> list[dict]:
+    """Filter location list to entries matching configured country codes with valid coordinates."""
     return [
         loc for loc in loc_list
-        if loc.get("country") in ("IN", "IND", "India")
+        if loc.get("country") in country_codes
         and loc.get("lat") is not None
         and loc.get("lon") is not None
     ]
 
 
-def best_india_location(loc_list: list[dict]) -> dict | None:
+def best_india_location(
+    loc_list: list[dict],
+    country_codes: tuple[str, ...],
+    subnational_types: set[int],
+) -> dict | None:
     """
-    Return the most specific India location available.
+    Return the most specific location available for the configured region.
     Prefer subnational (city/state) over country-level.
     """
-    india_locs = india_locations(loc_list)
+    india_locs = india_locations(loc_list, country_codes)
     if not india_locs:
         return None
-    subnational = [l for l in india_locs if l["loc_type"] in SUBNATIONAL_TYPES]
+    subnational = [l for l in india_locs if l["loc_type"] in subnational_types]
     return subnational[0] if subnational else india_locs[0]
 
 
@@ -152,13 +166,17 @@ def parse_themes(theme_string: str) -> set[str]:
     return themes
 
 
-def score_article(themes: set[str]) -> tuple[int, list[str]]:
+def score_article(
+    themes: set[str],
+    wildlife_themes: set[str],
+    conflict_themes: set[str],
+) -> tuple[int, list[str]]:
     """
     Return (score, matched_themes).
     score: 0=no match, 1=wildlife only, 2=conflict only, 3=both
     """
-    wildlife_hits  = themes & WILDLIFE_THEMES
-    conflict_hits  = themes & CONFLICT_THEMES
+    wildlife_hits = themes & wildlife_themes
+    conflict_hits = themes & conflict_themes
     score = (1 if wildlife_hits else 0) + (2 if conflict_hits else 0)
     return score, sorted(wildlife_hits | conflict_hits)
 
@@ -248,8 +266,19 @@ def fetch_gkg_file(url: str, cache_dir: Path) -> pd.DataFrame | None:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main(input_csv: str, output_enriched: str, output_geocoded: str,
-         output_hc: str, max_files: int, sleep: float):
+def main(
+    input_csv: str,
+    output_enriched: str,
+    output_geocoded: str,
+    output_hc: str,
+    max_files: int,
+    sleep: float,
+    meta_path: str,
+):
+
+    meta = load_domain_meta(meta_path)
+    wildlife_themes, conflict_themes, hc_min = get_gkg_theme_sets(meta)
+    country_codes, subnational_types = get_gkg_geography(meta)
 
     CACHE_DIR.mkdir(exist_ok=True)
 
@@ -326,23 +355,23 @@ def main(input_csv: str, output_enriched: str, output_geocoded: str,
                 continue
             idx = url_to_idx[url]
 
-            # Parse locations
-            locs = parse_v2locations(row.get("V2Locations", ""))
-            india_locs = india_locations(locs)
-            best = best_india_location(locs)
+            # Parse locations (cells may be float NaN in pandas even when column exists)
+            locs = parse_v2locations(_gkg_cell_str(row.get("V2Locations")))
+            india_locs = india_locations(locs, country_codes)
+            best = best_india_location(locs, country_codes, subnational_types)
 
             # Parse themes
-            themes = parse_themes(row.get("V2Themes", ""))
-            score, matched_themes = score_article(themes)
+            themes = parse_themes(_gkg_cell_str(row.get("V2Themes")))
+            score, matched_themes = score_article(themes, wildlife_themes, conflict_themes)
 
             # Parse tone
-            tone = parse_tone(row.get("V2Tone", ""))
+            tone = parse_tone(_gkg_cell_str(row.get("V2Tone")))
 
             # Write back
             articles.at[idx, "gkg_found"]           = "yes"
             articles.at[idx, "v2themes"]             = "; ".join(sorted(themes)[:30])
-            articles.at[idx, "v2locations_raw"]      = row.get("V2Locations", "")[:500]
-            articles.at[idx, "v2persons"]            = row.get("V2Persons", "")[:300]
+            articles.at[idx, "v2locations_raw"]      = _gkg_cell_str(row.get("V2Locations"), 500)
+            articles.at[idx, "v2persons"]            = _gkg_cell_str(row.get("V2Persons"), 300)
             articles.at[idx, "v2tone"]               = tone
             articles.at[idx, "theme_score"]          = score
             articles.at[idx, "matched_themes"]       = "; ".join(matched_themes)
@@ -371,7 +400,7 @@ def main(input_csv: str, output_enriched: str, output_geocoded: str,
     print(f"✓ Geocoded subset   → {output_geocoded}  ({len(geocoded)} rows)")
 
     high_conf = articles[articles["theme_score"].notna() &
-                         (articles["theme_score"].astype(float) >= 3)]
+                         (articles["theme_score"].astype(float) >= hc_min)]
     high_conf.to_csv(output_hc, index=False)
     print(f"✓ High-confidence   → {output_hc}  ({len(high_conf)} rows)")
 
@@ -411,13 +440,19 @@ Next steps:
 
 
 if __name__ == "__main__":
-    _data = Path(__file__).resolve().parent.parent / "data"
+    _root = Path(__file__).resolve().parent.parent
+    _data = _root / "data"
     parser = argparse.ArgumentParser(description="Enrich GDELT article list with GKG geocoding + themes")
     parser.add_argument("--input",     default=str(_data / "hwc_urls.csv"),
                         help="Input CSV from gdelt-fetch-urls.py")
     parser.add_argument("--enriched",  default=str(_data / "hwc_urls_enriched.csv"))
     parser.add_argument("--geocoded",  default=str(_data / "hwc_urls_geocoded.csv"))
     parser.add_argument("--high-conf", default=str(_data / "hwc_urls_high_confidence.csv"))
+    parser.add_argument(
+        "--meta",
+        default=str(_root / "meta" / "hwc_india_conflict_meta.json"),
+        help="Domain meta (gkg_theme_sets, gkg_geography)",
+    )
     parser.add_argument("--max-files", type=int, default=200,
                         help="Max GKG files to download (0=unlimited). Each covers 15 minutes.")
     parser.add_argument("--sleep",     type=float, default=0.5,
@@ -431,4 +466,5 @@ if __name__ == "__main__":
         output_hc=args.high_conf,
         max_files=args.max_files,
         sleep=args.sleep,
+        meta_path=args.meta,
     )

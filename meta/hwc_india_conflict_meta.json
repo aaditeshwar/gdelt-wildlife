@@ -3,18 +3,28 @@
   "domain": {
     "id": "hwc_india",
     "title": "Human–wildlife conflict (India)",
-    "description": "Enriched article extracts with LLM labels and coordinates (data/hwc_final_report*.csv). Used by scripts/gdelt-get-full-text.py and scripts/pilot_csv_to_geojson.py.",
+    "description": "Enriched article extracts with LLM labels and coordinates (data/hwc_final_report*.csv). Used by scripts/gdelt-get-full-text.py and scripts/convert_csv_to_geojson.py.",
     "related_scripts": [
+      "scripts/gdelt-fetch-urls.py",
+      "scripts/gdelt-enrich-urls.py",
+      "scripts/gdelt-enrich-urls-bigquery.py",
       "scripts/gdelt-get-full-text.py",
-      "scripts/pilot_csv_to_geojson.py"
+      "scripts/convert_csv_to_geojson.py"
     ]
   },
   "data_binding": {
-    "input_formats": ["pilot_results_csv"],
+    "input_formats": [
+      "pilot_results_csv"
+    ],
     "pilot_csv": {
       "filter_hwc_events": {
         "column": "is_hwc_event",
-        "true_values": ["true", "True", "TRUE", "1"]
+        "true_values": [
+          "true",
+          "True",
+          "TRUE",
+          "1"
+        ]
       },
       "geometry": {
         "longitude_column": "final_lon",
@@ -44,7 +54,7 @@
   },
   "taxonomy": {
     "event_type": {
-      "description": "Primary incident type from LLM (EXTRACTION_PROMPT in gdelt-get-full-text.py).",
+      "description": "Primary incident type from LLM (llm_extraction.extraction_prompt in this file).",
       "allowed_values": [
         "attack_on_human",
         "human_killed",
@@ -89,7 +99,11 @@
       ]
     },
     "confidence": {
-      "allowed_values": ["high", "medium", "low"]
+      "allowed_values": [
+        "high",
+        "medium",
+        "low"
+      ]
     },
     "gdelt_geography": {
       "notes": "GDELT-derived columns (gdelt_lat, all_india_locations) are district-level hints; final_lat/lon may be Google or GDELT fallback."
@@ -111,7 +125,10 @@
       {
         "id": "animal_harm",
         "label": "Animal harmed by people (injured / killed)",
-        "event_types": ["animal_injured", "animal_killed_by_human"]
+        "event_types": [
+          "animal_injured",
+          "animal_killed_by_human"
+        ]
       }
     ],
     "singleton_event_types": [
@@ -133,23 +150,196 @@
     }
   },
   "generalization": {
-    "purpose": "Copy this file, change domain + taxonomy + map_style, and point pilot_csv_to_geojson.py --meta at the new JSON for other hazard domains.",
+    "purpose": "Copy this file, change domain + taxonomy + map_style, and point convert_csv_to_geojson.py --meta at the new JSON for other hazard domains.",
     "example_future_domains": [
       {
         "id": "rural_flood_in",
         "title": "Rural floods (India)",
-        "taxonomy_focus": ["flood_depth_class", "affected_crops", "season"]
+        "taxonomy_focus": [
+          "flood_depth_class",
+          "affected_crops",
+          "season"
+        ]
       },
       {
         "id": "ag_drought_in",
         "title": "Agricultural drought / water stress",
-        "taxonomy_focus": ["severity", "crop_stage", "irrigation_failure"]
+        "taxonomy_focus": [
+          "severity",
+          "crop_stage",
+          "irrigation_failure"
+        ]
       },
       {
         "id": "heat_wave_in",
         "title": "Heat wave health / labour impacts",
-        "taxonomy_focus": ["alert_level", "urban_rural"]
+        "taxonomy_focus": [
+          "alert_level",
+          "urban_rural"
+        ]
       }
     ]
+  },
+  "gdelt_doc_fetch": {
+    "keywords": [
+      "human wildlife conflict",
+      "elephant corridor",
+      "tiger corridor",
+      "leopard attack",
+      "elephant attack",
+      "tiger attack",
+      "human elephant conflict",
+      "human tiger conflict",
+      "wildlife deaths India",
+      "forest department attack"
+    ],
+    "country": "IN",
+    "language": "English",
+    "max_records": 250,
+    "sleep_between_queries_seconds": 3,
+    "years_back": 5,
+    "window_months": 3,
+    "summary_banner": "GDELT HWC Feasibility Check — India",
+    "summary_title": "GDELT HWC India — Feasibility Summary"
+  },
+  "gkg_theme_sets": {
+    "wildlife_themes": [
+      "ENV_DEFORESTATION",
+      "ENV_FORESTS",
+      "ENV_POACHING",
+      "ENV_SPECIESENDANGERED",
+      "ENV_SPECIESEXTINCT",
+      "ENV_WILDLIFE",
+      "NATURAL_DISASTER",
+      "WB_2069_WILDLIFE_MANAGEMENT",
+      "WB_678_FORESTS"
+    ],
+    "conflict_themes": [
+      "AFFECT",
+      "CRISISLEX_CRISISLEXREC",
+      "CRISISLEX_T03_DEAD",
+      "CRISISLEX_T04_INJURED",
+      "KILL",
+      "SECURITY_SERVICES",
+      "TAX_FNCACT_ATTACK",
+      "WOUND"
+    ],
+    "high_confidence_theme_score_min": 3,
+    "theme_score_guide": {
+      "0": "No wildlife or conflict theme match",
+      "1": "Wildlife theme only",
+      "2": "Conflict/harm theme only",
+      "3": "Both wildlife + conflict themes (high confidence)"
+    }
+  },
+  "gkg_geography": {
+    "location_country_codes": [
+      "IN",
+      "IND",
+      "India"
+    ],
+    "subnational_loc_types": [
+      3,
+      4,
+      5
+    ]
+  },
+  "llm_extraction": {
+    "system_prompt_lines": [
+      "You are a meticulous wildlife conflict event analyst specialising in India.",
+      "Your task is to analyse Indian news articles and extract structured data about",
+      "human-wildlife conflict (HWC) events. You must respond ONLY with a single clean",
+      "JSON object — no markdown, no explanations, nothing outside the JSON."
+    ],
+    "extraction_prompt_lines": [
+      "Analyse this news article and extract human-wildlife conflict event data.",
+      "",
+      "Publication date: {pub_date}",
+      "URL: {url}",
+      "GDELT candidate locations: {gdelt_locations}",
+      "",
+      "Article text:",
+      "{article_text}",
+      "",
+      "---",
+      "",
+      "Follow these steps carefully:",
+      "",
+      "STEP 1 — Is this an actual HWC event?",
+      "An HWC event is a specific, real incident that has already occurred involving:",
+      "  - A wild animal attacking, injuring, or killing a human",
+      "  - A human killing or injuring a wild animal (poaching counts)",
+      "  - Wild animals destroying crops, livestock, or property",
+      "  - Human deaths/injuries while trying to drive animals away",
+      "  - Conflicts over wildlife corridors or forest land",
+      "",
+      "NOT an HWC event:",
+      "  - Policy discussions, budget allocations, conservation plans",
+      "  - Warnings about potential future conflicts",
+      "  - General statistics without a specific incident",
+      "  - Multiple unrelated incidents summarised together",
+      "  - Court cases or legal discussions without a specific triggering event",
+      "",
+      "If NOT an HWC event → output the \"no event\" JSON (see format below) and stop.",
+      "",
+      "STEP 2 — Extract event details (only if Step 1 = true)",
+      "  a) species: the primary animal involved. Use lowercase common name.",
+      "     Options: elephant, tiger, leopard, bear, wild boar, crocodile, snake,",
+      "              wolf, nilgai, gaur, rhino, monkey, other (specify)",
+      "  b) event_type: primary type of incident.",
+      "     Options: attack_on_human, human_killed, human_injured, crop_raid,",
+      "              livestock_kill, animal_killed_by_human, animal_injured,",
+      "              road_collision, corridor_conflict, other (specify)",
+      "  c) victims: numbers mentioned. Use null if not stated.",
+      "     - humans_killed, humans_injured, animals_killed, animals_injured",
+      "  d) event_date: the date the event occurred (not publication date).",
+      "     Format YYYY-MM-DD. Use publication date if only \"recently\" or similar.",
+      "     Use null if completely unknown.",
+      "  e) primary_location: the single most specific place name explicitly stated",
+      "     as where the incident occurred. Prefer village > forest range/division >",
+      "     taluka > district. Write as \"Place, District, State, India\".",
+      "     Example: \"Nilambur, Malappuram, Kerala, India\"",
+      "     Use null if no specific location is mentioned.",
+      "  f) location_type: how specific is primary_location?",
+      "     Options: village, town, forest_range, forest_division,",
+      "              taluka, district, state, unknown",
+      "  g) location_notes: any additional location context from the article",
+      "     (e.g. nearby landmarks, forest division name, river name). Max 100 chars.",
+      "  h) confidence: your confidence in the extraction overall.",
+      "     Options: high, medium, low",
+      "",
+      "STEP 3 — Location reconciliation",
+      "  Compare primary_location against the GDELT candidate locations provided above.",
+      "  If one matches (same place, same or coarser specificity), record it.",
+      "  If none match, record null.",
+      "",
+      "Output format (always return exactly this JSON structure):",
+      "",
+      "{{",
+      "  \"is_hwc_event\": true or false,",
+      "  \"species\": \"...\",",
+      "  \"event_type\": \"...\",",
+      "  \"victims\": {{",
+      "    \"humans_killed\": null,",
+      "    \"humans_injured\": null,",
+      "    \"animals_killed\": null,",
+      "    \"animals_injured\": null",
+      "  }},",
+      "  \"event_date\": \"YYYY-MM-DD or null\",",
+      "  \"primary_location\": \"Place, District, State, India or null\",",
+      "  \"location_type\": \"...\",",
+      "  \"location_notes\": \"...\",",
+      "  \"gdelt_location_match\": \"matched GDELT location or null\",",
+      "  \"confidence\": \"high/medium/low\",",
+      "  \"extraction_notes\": \"any caveats or uncertainties, max 150 chars\"",
+      "}}"
+    ],
+    "extraction_prompt_placeholders": [
+      "pub_date",
+      "url",
+      "gdelt_locations",
+      "article_text"
+    ],
+    "notes": "extraction_prompt is joined with newlines then formatted with .format(**kwargs). Literal braces in the JSON example use doubled {{ }} in the joined string."
   }
 }

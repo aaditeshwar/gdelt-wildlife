@@ -14,43 +14,30 @@ Usage:
 Output (under data/):
     hwc_urls.csv          — deduplicated article metadata
     hwc_urls_summary.txt  — coverage stats and notes
+
+Domain keywords, country, and query tuning come from the meta JSON (gdelt_doc_fetch),
+default: meta/hwc_india_conflict_meta.json
 """
 
-import time
+import argparse
 import datetime
+import sys
+import time
 from pathlib import Path
 
 import pandas as pd
 from gdeltdoc import GdeltDoc, Filters
 
-# ── Configuration ─────────────────────────────────────────────────────────────
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+from domain_meta import get_gdelt_doc_fetch, load_domain_meta  # noqa: E402
 
-KEYWORDS = [
-    "human wildlife conflict",
-    "elephant corridor",
-    "tiger corridor",
-    "leopard attack",
-    "elephant attack",
-    "tiger attack",
-    "human elephant conflict",
-    "human tiger conflict",
-    "wildlife deaths India",
-    "forest department attack",
-]
-
-COUNTRY = "IN"          # FIPS 2-letter code for India
-LANGUAGE = "English"
-MAX_RECORDS = 250       # DOC API hard cap per query
-SLEEP_BETWEEN_QUERIES = 3  # seconds — be polite to GDELT servers
-
-# How far back to attempt (5 years). Note: DOC API guarantees only ~3 months;
-# older windows may return sparse or empty results — this is expected.
-YEARS_BACK = 5
-WINDOW_MONTHS = 3       # query window size in months
-
-_DATA = Path(__file__).resolve().parent.parent / "data"
+_ROOT = Path(__file__).resolve().parent.parent
+_DATA = _ROOT / "data"
 OUTPUT_CSV = _DATA / "hwc_urls.csv"
 OUTPUT_SUMMARY = _DATA / "hwc_urls_summary.txt"
+_DEFAULT_META = _ROOT / "meta" / "hwc_india_conflict_meta.json"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -75,16 +62,25 @@ def date_windows(years_back: int, window_months: int):
     return windows
 
 
-def query_gdelt(keyword: str, start: str, end: str, gd: GdeltDoc) -> pd.DataFrame:
+def query_gdelt(
+    keyword: str,
+    start: str,
+    end: str,
+    gd: GdeltDoc,
+    *,
+    country: str,
+    language: str,
+    max_records: int,
+) -> pd.DataFrame:
     """Run a single GDELT article search. Returns empty DataFrame on failure."""
     try:
         f = Filters(
             keyword=keyword,
             start_date=start,
             end_date=end,
-            num_records=MAX_RECORDS,
-            country=COUNTRY,
-            language=LANGUAGE,
+            num_records=max_records,
+            country=country,
+            language=language,
         )
         df = gd.article_search(f)
         if df is not None and not df.empty:
@@ -101,14 +97,34 @@ def query_gdelt(keyword: str, start: str, end: str, gd: GdeltDoc) -> pd.DataFram
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    ap = argparse.ArgumentParser(description="Fetch GDELT DOC URLs using domain meta")
+    ap.add_argument(
+        "--meta",
+        default=str(_DEFAULT_META),
+        help="Domain meta JSON (must define gdelt_doc_fetch)",
+    )
+    args = ap.parse_args()
+
+    meta = load_domain_meta(args.meta)
+    cfg = get_gdelt_doc_fetch(meta)
+    keywords = list(cfg["keywords"])
+    country = str(cfg["country"])
+    language = str(cfg["language"])
+    max_records = int(cfg.get("max_records", 250))
+    sleep_q = float(cfg.get("sleep_between_queries_seconds", 3))
+    years_back = int(cfg.get("years_back", 5))
+    window_months = int(cfg.get("window_months", 3))
+    banner = str(cfg.get("summary_banner", "GDELT DOC fetch"))
+    summary_title = str(cfg.get("summary_title", "GDELT summary"))
+
     gd = GdeltDoc()
-    windows = date_windows(YEARS_BACK, WINDOW_MONTHS)
-    
-    print(f"GDELT HWC Feasibility Check — India")
+    windows = date_windows(years_back, window_months)
+
+    print(banner)
     print(f"{'='*60}")
-    print(f"Keywords : {len(KEYWORDS)}")
-    print(f"Windows  : {len(windows)} × {WINDOW_MONTHS}-month chunks over {YEARS_BACK} years")
-    print(f"Total    : up to {len(KEYWORDS) * len(windows)} API calls")
+    print(f"Keywords : {len(keywords)}")
+    print(f"Windows  : {len(windows)} × {window_months}-month chunks over {years_back} years")
+    print(f"Total    : up to {len(keywords) * len(windows)} API calls")
     print(f"NOTE: Only the most recent ~3 months are guaranteed by GDELT DOC API.")
     print(f"      Older windows will be attempted but may return sparse results.\n")
 
@@ -120,15 +136,23 @@ def main():
         window_dfs = []
         keywords_with_results = 0
 
-        for kw in KEYWORDS:
+        for kw in keywords:
             print(f"  → querying: '{kw}' ... ", end="", flush=True)
-            df = query_gdelt(kw, start, end, gd)
+            df = query_gdelt(
+                kw,
+                start,
+                end,
+                gd,
+                country=country,
+                language=language,
+                max_records=max_records,
+            )
             n = len(df)
             print(f"{n} articles")
             if n > 0:
                 window_dfs.append(df)
                 keywords_with_results += 1
-            time.sleep(SLEEP_BETWEEN_QUERIES)
+            time.sleep(sleep_q)
 
         if window_dfs:
             window_df = pd.concat(window_dfs, ignore_index=True)
@@ -175,10 +199,10 @@ def main():
     stats_df = pd.DataFrame(window_stats)
 
     summary_lines = [
-        "GDELT HWC India — Feasibility Summary",
+        summary_title,
         "=" * 60,
         f"Date range attempted : {windows[-1][0]} to {windows[0][1]}",
-        f"Keywords searched    : {len(KEYWORDS)}",
+        f"Keywords searched    : {len(keywords)}",
         f"Time windows         : {len(windows)}",
         f"Raw articles (with duplicates): {total_raw}",
         f"Deduplicated articles         : {total_dedup}",

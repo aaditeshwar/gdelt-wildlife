@@ -58,6 +58,11 @@ import requests
 import trafilatura
 from tqdm import tqdm
 
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+from domain_meta import get_gkg_theme_sets, get_llm_prompts, load_domain_meta  # noqa: E402
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 OLLAMA_BASE_URL     = "http://10.237.20.197:11434"
@@ -128,97 +133,7 @@ def _pilot_scalar_for_csv(v):
     return str(v)
 
 
-# ── LLM extraction prompt ─────────────────────────────────────────────────────
-# Adapted from the Groundsource paper's Appendix A prompt structure,
-# modified for human-wildlife conflict events in India.
-
-SYSTEM_PROMPT = """You are a meticulous wildlife conflict event analyst specialising in India.
-Your task is to analyse Indian news articles and extract structured data about
-human-wildlife conflict (HWC) events. You must respond ONLY with a single clean
-JSON object — no markdown, no explanations, nothing outside the JSON."""
-
-EXTRACTION_PROMPT = """Analyse this news article and extract human-wildlife conflict event data.
-
-Publication date: {pub_date}
-URL: {url}
-GDELT candidate locations: {gdelt_locations}
-
-Article text:
-{article_text}
-
----
-
-Follow these steps carefully:
-
-STEP 1 — Is this an actual HWC event?
-An HWC event is a specific, real incident that has already occurred involving:
-  - A wild animal attacking, injuring, or killing a human
-  - A human killing or injuring a wild animal (poaching counts)
-  - Wild animals destroying crops, livestock, or property
-  - Human deaths/injuries while trying to drive animals away
-  - Conflicts over wildlife corridors or forest land
-
-NOT an HWC event:
-  - Policy discussions, budget allocations, conservation plans
-  - Warnings about potential future conflicts
-  - General statistics without a specific incident
-  - Multiple unrelated incidents summarised together
-  - Court cases or legal discussions without a specific triggering event
-
-If NOT an HWC event → output the "no event" JSON (see format below) and stop.
-
-STEP 2 — Extract event details (only if Step 1 = true)
-  a) species: the primary animal involved. Use lowercase common name.
-     Options: elephant, tiger, leopard, bear, wild boar, crocodile, snake,
-              wolf, nilgai, gaur, rhino, monkey, other (specify)
-  b) event_type: primary type of incident.
-     Options: attack_on_human, human_killed, human_injured, crop_raid,
-              livestock_kill, animal_killed_by_human, animal_injured,
-              road_collision, corridor_conflict, other (specify)
-  c) victims: numbers mentioned. Use null if not stated.
-     - humans_killed, humans_injured, animals_killed, animals_injured
-  d) event_date: the date the event occurred (not publication date).
-     Format YYYY-MM-DD. Use publication date if only "recently" or similar.
-     Use null if completely unknown.
-  e) primary_location: the single most specific place name explicitly stated
-     as where the incident occurred. Prefer village > forest range/division >
-     taluka > district. Write as "Place, District, State, India".
-     Example: "Nilambur, Malappuram, Kerala, India"
-     Use null if no specific location is mentioned.
-  f) location_type: how specific is primary_location?
-     Options: village, town, forest_range, forest_division,
-              taluka, district, state, unknown
-  g) location_notes: any additional location context from the article
-     (e.g. nearby landmarks, forest division name, river name). Max 100 chars.
-  h) confidence: your confidence in the extraction overall.
-     Options: high, medium, low
-
-STEP 3 — Location reconciliation
-  Compare primary_location against the GDELT candidate locations provided above.
-  If one matches (same place, same or coarser specificity), record it.
-  If none match, record null.
-
-Output format (always return exactly this JSON structure):
-
-{{
-  "is_hwc_event": true or false,
-  "species": "...",
-  "event_type": "...",
-  "victims": {{
-    "humans_killed": null,
-    "humans_injured": null,
-    "animals_killed": null,
-    "animals_injured": null
-  }},
-  "event_date": "YYYY-MM-DD or null",
-  "primary_location": "Place, District, State, India or null",
-  "location_type": "...",
-  "location_notes": "...",
-  "gdelt_location_match": "matched GDELT location or null",
-  "confidence": "high/medium/low",
-  "extraction_notes": "any caveats or uncertainties, max 150 chars"
-}}
-"""
+# LLM system/user prompts: loaded from meta JSON (llm_extraction), see --meta.
 
 # ── Article fetching ──────────────────────────────────────────────────────────
 
@@ -473,14 +388,22 @@ def check_ollama(model: str) -> bool:
         return False
 
 
-def extract_hwc_event(model: str, url: str, article_text: str,
-                      pub_date: str, gdelt_locations: str) -> dict:
+def extract_hwc_event(
+    model: str,
+    url: str,
+    article_text: str,
+    pub_date: str,
+    gdelt_locations: str,
+    *,
+    system_prompt: str,
+    extraction_prompt: str,
+) -> dict:
     """Send article to local Ollama LLM for structured HWC extraction."""
     truncated = article_text[:MAX_ARTICLE_CHARS]
     if len(article_text) > MAX_ARTICLE_CHARS:
         truncated += "\n\n[article truncated]"
 
-    prompt = EXTRACTION_PROMPT.format(
+    prompt = extraction_prompt.format(
         pub_date=pub_date or "unknown",
         url=url,
         gdelt_locations=gdelt_locations or "none available",
@@ -490,7 +413,7 @@ def extract_hwc_event(model: str, url: str, article_text: str,
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user",   "content": prompt},
         ],
         "stream": False,
@@ -597,6 +520,9 @@ def process_fetched_article(
     fetch_method: str,
     model: str,
     no_geocode: bool,
+    *,
+    system_prompt: str,
+    extraction_prompt: str,
 ) -> dict:
     """
     LLM extraction + geocode for one article after text is available.
@@ -613,7 +539,13 @@ def process_fetched_article(
     }
 
     extracted = extract_hwc_event(
-        model, url, article_text, pub_date, str(gdelt_loc or "")
+        model,
+        url,
+        article_text,
+        pub_date,
+        str(gdelt_loc or ""),
+        system_prompt=system_prompt,
+        extraction_prompt=extraction_prompt,
     )
     time.sleep(SLEEP_LLM)
 
@@ -699,6 +631,9 @@ def retry_failed_pilot_results(
     verbose: bool,
     max_retries: int | None,
     proxy_server: str | None = None,
+    *,
+    system_prompt: str,
+    extraction_prompt: str,
 ):
     """
     Read data/hwc_final_report.csv; for rows with fetch_method=failed, load page with
@@ -834,6 +769,8 @@ def retry_failed_pilot_results(
                 fetch_method="selenium",
                 model=model,
                 no_geocode=no_geocode,
+                system_prompt=system_prompt,
+                extraction_prompt=extraction_prompt,
             )
             for k, v in out.items():
                 if k not in df.columns:
@@ -862,9 +799,20 @@ def retry_failed_pilot_results(
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main(input_csv: str, sample_size: int, output_csv: str,
-         output_report: str, no_geocode: bool, seed: int, model: str,
-         verbose: bool = False):
+def main(
+    input_csv: str,
+    sample_size: int,
+    output_csv: str,
+    output_report: str,
+    no_geocode: bool,
+    seed: int,
+    model: str,
+    verbose: bool = False,
+    *,
+    system_prompt: str,
+    extraction_prompt: str,
+    theme_hc_min: int,
+):
 
     setup_logging(verbose)
     if verbose:
@@ -892,8 +840,8 @@ def main(input_csv: str, sample_size: int, output_csv: str,
         # Prefer high-confidence/geocoded rows if columns exist
         if "theme_score" in df.columns:
             df["theme_score"] = pd.to_numeric(df["theme_score"], errors="coerce")
-            hc = df[df["theme_score"] >= 3]
-            rest = df[df["theme_score"] < 3].fillna(0)
+            hc = df[df["theme_score"] >= theme_hc_min]
+            rest = df[df["theme_score"] < theme_hc_min].fillna(0)
             n_hc = min(len(hc), int(sample_size * 0.7))
             n_rest = sample_size - n_hc
             random.seed(seed)
@@ -986,6 +934,8 @@ def main(input_csv: str, sample_size: int, output_csv: str,
             fetch_method=fetch_method,
             model=model,
             no_geocode=no_geocode,
+            system_prompt=system_prompt,
+            extraction_prompt=extraction_prompt,
         )
         accumulate_stats_from_result(stats, result_row)
 
@@ -1131,7 +1081,16 @@ if __name__ == "__main__":
         action="store_true",
         help="Log each step per URL (fetch, LLM, geocode, Selenium retry) to stderr; disables tqdm bar",
     )
+    p.add_argument(
+        "--meta",
+        default=str(_root / "meta" / "hwc_india_conflict_meta.json"),
+        help="Domain meta JSON (llm_extraction prompts, gkg_theme_sets for sampling)",
+    )
     args = p.parse_args()
+
+    meta = load_domain_meta(args.meta)
+    system_prompt, extraction_prompt = get_llm_prompts(meta)
+    _, _, theme_hc_min = get_gkg_theme_sets(meta)
 
     # nargs='?' + const: flag alone → pilot CSV path; omitted → first-run mode
     use_retry = args.retry_failed_from is not None
@@ -1151,6 +1110,8 @@ if __name__ == "__main__":
             verbose=args.verbose,
             max_retries=max_r,
             proxy_server=args.proxy_server,
+            system_prompt=system_prompt,
+            extraction_prompt=extraction_prompt,
         )
     else:
         main(
@@ -1162,4 +1123,7 @@ if __name__ == "__main__":
             seed          = args.seed,
             model         = args.model,
             verbose       = args.verbose,
+            system_prompt = system_prompt,
+            extraction_prompt = extraction_prompt,
+            theme_hc_min  = theme_hc_min,
         )
