@@ -13,3 +13,13 @@ db-dtypes>=1.2.0
 
 # Selenium retry path (gdelt-get-full-text.py --retry-failed-from only)
 selenium>=4.15.0
+
+# Web map API (server/main.py) + password hashing
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+bcrypt>=4.1.0
+itsdangerous>=2.0.0
+python-dotenv>=1.0.0
+
+# Optional: frontend dev server (npm install in frontend/)

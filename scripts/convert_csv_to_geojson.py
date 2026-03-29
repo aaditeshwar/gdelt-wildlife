@@ -23,6 +23,15 @@ from pathlib import Path
 
 import pandas as pd
 
+from domain_paths import (  # noqa: E402
+    ensure_event_id_column,
+    final_report_updated_csv,
+    meta_path_default,
+    output_prefix,
+    points_geojson,
+    points_qml,
+)
+
 
 def _truthy_hwc(val) -> bool:
     if val is None or (isinstance(val, float) and math.isnan(val)):
@@ -211,6 +220,7 @@ def main() -> None:
         sys.exit(f"ERROR: input CSV not found: {inp}")
 
     df = pd.read_csv(inp, dtype=object)
+    df = ensure_event_id_column(df)
     filter_spec = meta.get("data_binding", {}).get("pilot_csv", {}).get("filter_hwc_events", {})
     col_flag = filter_spec.get("column", "is_hwc_event")
     if col_flag not in df.columns:
@@ -231,6 +241,8 @@ def main() -> None:
     props_cols = [c for c in props_cols if c in df.columns]
     if "event_type" not in props_cols and "event_type" in df.columns:
         props_cols.append("event_type")
+    if "event_id" not in props_cols and "event_id" in df.columns:
+        props_cols.insert(0, "event_id")
 
     features = []
     for _, row in df.iterrows():
@@ -238,6 +250,7 @@ def main() -> None:
             continue
         if not _finite_lon_lat(row.get(lon_c), row.get(lat_c)):
             continue
+        eid = str(row.get("event_id", "") or "").strip()
         lon = float(row[lon_c])
         lat = float(row[lat_c])
         et = row.get("event_type", "")
@@ -249,13 +262,16 @@ def main() -> None:
                 props[c] = None
             else:
                 props[c] = str(v) if not isinstance(v, (int, float, bool)) else v
-        features.append(
-            {
-                "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [lon, lat]},
-                "properties": props,
-            }
-        )
+        if "event_id" not in props or props.get("event_id") in (None, ""):
+            props["event_id"] = eid
+        feat: dict = {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [lon, lat]},
+            "properties": props,
+        }
+        if eid:
+            feat["id"] = eid
+        features.append(feat)
 
     fc = {
         "type": "FeatureCollection",
@@ -273,11 +289,7 @@ def main() -> None:
 
     qml_arg = args.write_qml
     if qml_arg is not None:
-        qml_path = (
-            root / "outputs" / "hwc_india_points.qml"
-            if qml_arg == "__default__"
-            else Path(qml_arg)
-        )
+        qml_path = points_qml(root, pfx) if qml_arg == "__default__" else Path(qml_arg)
         write_qml_categorized(qml_path, meta, field_cat)
         print(f"Wrote QGIS style -> {qml_path} (field: {field_cat})")
 

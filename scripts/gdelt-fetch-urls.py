@@ -23,6 +23,7 @@ import argparse
 import datetime
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import pandas as pd
@@ -32,12 +33,10 @@ _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 from domain_meta import get_gdelt_doc_fetch, load_domain_meta  # noqa: E402
+from domain_paths import meta_path_default, output_prefix, urls_csv, urls_summary_txt  # noqa: E402
 
 _ROOT = Path(__file__).resolve().parent.parent
-_DATA = _ROOT / "data"
-OUTPUT_CSV = _DATA / "hwc_urls.csv"
-OUTPUT_SUMMARY = _DATA / "hwc_urls_summary.txt"
-_DEFAULT_META = _ROOT / "meta" / "hwc_india_conflict_meta.json"
+_DEFAULT_META = meta_path_default(_ROOT)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -106,6 +105,9 @@ def main():
     args = ap.parse_args()
 
     meta = load_domain_meta(args.meta)
+    prefix = output_prefix(args.meta)
+    output_csv = urls_csv(_ROOT, prefix)
+    output_summary = urls_summary_txt(_ROOT, prefix)
     cfg = get_gdelt_doc_fetch(meta)
     keywords = list(cfg["keywords"])
     country = str(cfg["country"])
@@ -181,14 +183,17 @@ def main():
         # Sort by date descending
         combined_dedup = combined_dedup.sort_values("seendate", ascending=False)
 
+        # Stable row IDs for the rest of the pipeline
+        combined_dedup.insert(0, "event_id", [str(uuid.uuid4()) for _ in range(len(combined_dedup))])
+
         # Save CSV
-        cols = ["url", "title", "seendate", "domain", "language",
+        cols = ["event_id", "url", "title", "seendate", "domain", "language",
                 "sourcecountry", "query_keyword", "query_start", "query_end",
                 "url_mobile", "socialimage"]
         cols = [c for c in cols if c in combined_dedup.columns]
-        OUTPUT_CSV.parent.mkdir(parents=True, exist_ok=True)
-        combined_dedup[cols].to_csv(OUTPUT_CSV, index=False)
-        print(f"\n✓ Saved {total_dedup} deduplicated articles → {OUTPUT_CSV}")
+        output_csv.parent.mkdir(parents=True, exist_ok=True)
+        combined_dedup[cols].to_csv(output_csv, index=False)
+        print(f"\n✓ Saved {total_dedup} deduplicated articles → {output_csv}")
     else:
         total_raw = 0
         total_dedup = 0
@@ -241,12 +246,12 @@ def main():
     ]
 
     summary_text = "\n".join(summary_lines)
-    OUTPUT_SUMMARY.parent.mkdir(parents=True, exist_ok=True)
-    with open(OUTPUT_SUMMARY, "w") as f:
+    output_summary.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_summary, "w") as f:
         f.write(summary_text)
 
     print("\n" + summary_text)
-    print(f"\n✓ Summary saved → {OUTPUT_SUMMARY}")
+    print(f"\n✓ Summary saved → {output_summary}")
 
 
 if __name__ == "__main__":

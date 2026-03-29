@@ -62,6 +62,16 @@ _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 from domain_meta import get_gkg_theme_sets, get_llm_prompts, load_domain_meta  # noqa: E402
+from domain_paths import (  # noqa: E402
+    ensure_event_id_column,
+    final_report_csv,
+    final_report_txt,
+    final_report_updated_csv,
+    meta_path_default,
+    output_prefix,
+    prefix_from_report_csv,
+    urls_geocoded_csv,
+)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -521,6 +531,7 @@ def process_fetched_article(
     model: str,
     no_geocode: bool,
     *,
+    event_id: str,
     system_prompt: str,
     extraction_prompt: str,
 ) -> dict:
@@ -529,6 +540,7 @@ def process_fetched_article(
     Returns a full result row dict aligned with data/hwc_final_report.csv columns.
     """
     result_row: dict = {
+        "event_id": event_id,
         "url": url,
         "title": title,
         "pub_date": pub_date,
@@ -655,7 +667,10 @@ def retry_failed_pilot_results(
     print(f"\nLoading pilot results (previous run — must include fetch_method): {pilot_csv}")
     # object dtype: pandas StringDtype (from dtype=str) rejects int/float/bool on df.at[..]=...
     df = pd.read_csv(pilot_csv, dtype=object)
-    geo_path = Path(pilot_csv).resolve().parent / "hwc_urls_geocoded.csv"
+    df = ensure_event_id_column(df)
+    _rp = Path(pilot_csv).resolve()
+    _pfx = prefix_from_report_csv(_rp)
+    geo_path = urls_geocoded_csv(_rp.parent.parent, _pfx)
     if geo_path.exists():
         try:
             g = pd.read_csv(geo_path, dtype=object)
@@ -758,6 +773,7 @@ def retry_failed_pilot_results(
                 continue
 
             log.debug("  pipeline: process_fetched_article (chars=%s)", len(article_text))
+            eid = str(row.get("event_id", "") or "").strip()
             out = process_fetched_article(
                 url=url,
                 title=title,
@@ -769,6 +785,7 @@ def retry_failed_pilot_results(
                 fetch_method="selenium",
                 model=model,
                 no_geocode=no_geocode,
+                event_id=eid,
                 system_prompt=system_prompt,
                 extraction_prompt=extraction_prompt,
             )
@@ -831,6 +848,7 @@ def main(
     # ── Load & sample ──────────────────────────────────────────────────────
     print(f"\nLoading: {input_csv}")
     df = pd.read_csv(input_csv, dtype=str)
+    df = ensure_event_id_column(df)
     print(f"  → {len(df)} total articles (first run: input has no fetch_method; it is added in output)")
 
     if sample_size == -1:
@@ -888,7 +906,9 @@ def main(
             (str(gdelt_loc)[:200] + "…") if len(str(gdelt_loc)) > 200 else gdelt_loc,
         )
 
+        eid = str(row.get("event_id", "") or "").strip()
         result_row = {
+            "event_id": eid,
             "url": url,
             "title": title,
             "pub_date": pub_date,
@@ -934,6 +954,7 @@ def main(
             fetch_method=fetch_method,
             model=model,
             no_geocode=no_geocode,
+            event_id=eid,
             system_prompt=system_prompt,
             extraction_prompt=extraction_prompt,
         )
@@ -1033,9 +1054,9 @@ if __name__ == "__main__":
     )
     p.add_argument(
         "--input",
-        default=str(_data / "hwc_urls_geocoded.csv"),
+        default=None,
         help="First run only: article CSV with url, seendate, GDELT columns (no fetch_method). "
-        "Ignored when --retry-failed-from is used.",
+        "Default: data/{prefix}_urls_geocoded.csv from --meta. Ignored when --retry-failed-from is used.",
     )
     p.add_argument("--sample",  type=int, default=-1,
                    help="Number of articles to process (default: -1 for all articles)")
@@ -1045,18 +1066,22 @@ if __name__ == "__main__":
         help="Output CSV (default: data/hwc_final_report.csv, or data/hwc_final_report_updated.csv "
         "when --retry-failed-from is set)",
     )
-    p.add_argument("--report",  default=str(_out / "hwc_final_report.txt"))
+    p.add_argument(
+        "--report",
+        default=None,
+        help="Quality report .txt (default: outputs/{prefix}_final_report.txt from --meta).",
+    )
     p.add_argument(
         "--retry-failed-from",
         "--fetch-failed-from",
         nargs="?",
-        const=str(_data / "hwc_final_report.csv"),
+        const="__DEFAULT_FINAL_REPORT__",
         default=None,
         metavar="PILOT_CSV",
         help="Second run: load a previous run CSV (must have fetch_method). "
-        "If you pass this flag with no path, uses data/hwc_final_report.csv. "
+        "If you pass this flag with no path, uses data/{prefix}_final_report.csv from --meta. "
         "Only failed rows are re-fetched; other rows are kept from the previous run. "
-        "Output default: data/hwc_final_report_updated.csv. --input is ignored.",
+        "Output default: data/{prefix}_final_report_updated.csv. --input is ignored.",
     )
     p.add_argument(
         "--max-selenium-retries",
@@ -1083,10 +1108,18 @@ if __name__ == "__main__":
     )
     p.add_argument(
         "--meta",
-        default=str(_root / "meta" / "hwc_india_conflict_meta.json"),
+        default=str(meta_path_default(_root)),
         help="Domain meta JSON (llm_extraction prompts, gkg_theme_sets for sampling)",
     )
     args = p.parse_args()
+
+    _pfx = output_prefix(args.meta)
+    if args.input is None:
+        args.input = str(urls_geocoded_csv(_root, _pfx))
+    if args.report is None:
+        args.report = str(final_report_txt(_root, _pfx))
+    if args.retry_failed_from == "__DEFAULT_FINAL_REPORT__":
+        args.retry_failed_from = str(final_report_csv(_root, _pfx))
 
     meta = load_domain_meta(args.meta)
     system_prompt, extraction_prompt = get_llm_prompts(meta)
@@ -1095,9 +1128,9 @@ if __name__ == "__main__":
     # nargs='?' + const: flag alone → pilot CSV path; omitted → first-run mode
     use_retry = args.retry_failed_from is not None
     output_csv = args.output or (
-        str(_data / "hwc_final_report_updated.csv")
+        str(final_report_updated_csv(_root, _pfx))
         if use_retry
-        else str(_data / "hwc_final_report.csv")
+        else str(final_report_csv(_root, _pfx))
     )
 
     if use_retry:

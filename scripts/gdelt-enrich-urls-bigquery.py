@@ -46,6 +46,16 @@ _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 from domain_meta import get_gkg_geography, get_gkg_theme_sets, load_domain_meta  # noqa: E402
+from domain_paths import (  # noqa: E402
+    ensure_event_id_column,
+    meta_path_default,
+    output_prefix,
+    urls_csv,
+    urls_enriched_csv,
+    urls_geocoded_csv,
+    urls_high_confidence_csv,
+    urls_unmatched_csv,
+)
 
 # ── GKG V2Locations parser ─────────────────────────────────────────────────────
 # Format per location block: TYPE#NAME#COUNTRYCODE#ADM1CODE#LAT#LON#FEATUREID
@@ -218,6 +228,7 @@ def main(
     # ── Load articles ──────────────────────────────────────────────────────
     print(f"\nLoading: {input_csv}")
     articles = pd.read_csv(input_csv, dtype=str)
+    articles = ensure_event_id_column(articles)
     print(f"  → {len(articles)} articles")
 
     for col in ("url", "seendate"):
@@ -373,7 +384,6 @@ Next steps:
 
 if __name__ == "__main__":
     _root = Path(__file__).resolve().parent.parent
-    _data = _root / "data"
     p = argparse.ArgumentParser(
         description="Enrich GDELT article URLs with GKG data via BigQuery"
     )
@@ -381,15 +391,15 @@ if __name__ == "__main__":
                    help="GCP project ID (e.g. my-gcp-project-123)")
     p.add_argument(
         "--meta",
-        default=str(_root / "meta" / "hwc_india_conflict_meta.json"),
+        default=str(meta_path_default(_root)),
         help="Domain meta (gkg_theme_sets, gkg_geography)",
     )
-    p.add_argument("--input",     default=str(_data / "hwc_urls.csv"),
-                   help="Input CSV from gdelt-fetch-urls.py")
-    p.add_argument("--enriched",  default=str(_data / "hwc_urls_enriched.csv"))
-    p.add_argument("--geocoded",  default=str(_data / "hwc_urls_geocoded.csv"))
-    p.add_argument("--high-conf", default=str(_data / "hwc_urls_high_confidence.csv"))
-    p.add_argument("--unmatched", default=str(_data / "hwc_urls_unmatched.csv"))
+    p.add_argument("--input",     default=None,
+                   help="Input CSV from gdelt-fetch-urls.py (default from --meta prefix)")
+    p.add_argument("--enriched",  default=None)
+    p.add_argument("--geocoded",  default=None)
+    p.add_argument("--high-conf", default=None)
+    p.add_argument("--unmatched", default=None)
     p.add_argument("--dry-run",   action="store_true",
                    help="Print the SQL query without executing it")
     p.add_argument(
@@ -403,6 +413,17 @@ if __name__ == "__main__":
         ),
     )
     args = p.parse_args()
+    _pfx = output_prefix(args.meta)
+    if args.input is None:
+        args.input = str(urls_csv(_root, _pfx))
+    if args.enriched is None:
+        args.enriched = str(urls_enriched_csv(_root, _pfx))
+    if args.geocoded is None:
+        args.geocoded = str(urls_geocoded_csv(_root, _pfx))
+    if args.high_conf is None:
+        args.high_conf = str(urls_high_confidence_csv(_root, _pfx))
+    if args.unmatched is None:
+        args.unmatched = str(urls_unmatched_csv(_root, _pfx))
 
     main(
         project     = args.project,

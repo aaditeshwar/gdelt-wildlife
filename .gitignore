@@ -1,0 +1,8 @@
+# Local env (use .env.example as template)
+server/.env
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+
+# Frontend build output is committed optionally; node_modules never
+frontend/node_modules/

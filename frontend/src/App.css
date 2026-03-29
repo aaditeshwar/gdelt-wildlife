@@ -1,0 +1,191 @@
+.layout {
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  height: 100%;
+  min-height: 0;
+}
+
+.map {
+  min-height: 320px;
+  width: 100%;
+}
+
+/* MapLibre popup: title link opens article in a new tab */
+.maplibregl-popup.map-popup-wrap .maplibregl-popup-content {
+  padding: 8px 10px;
+  font-size: 0.85rem;
+  line-height: 1.35;
+  max-width: 280px;
+}
+
+.map-popup-inner {
+  margin: 0;
+}
+
+.map-popup-link {
+  color: #1565c0;
+  font-weight: 500;
+  text-decoration: underline;
+  word-break: break-word;
+}
+
+.map-popup-link:hover {
+  color: #0d47a1;
+}
+
+.panel {
+  background: #fafafa;
+  border-left: 1px solid #ddd;
+  padding: 12px 14px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.panel-head h1 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.panel-actions button {
+  font-size: 0.85rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85rem;
+}
+
+.field span {
+  color: #555;
+}
+
+.field input,
+.field select {
+  padding: 6px 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font: inherit;
+}
+
+.banner {
+  margin: 0;
+  padding: 8px;
+  background: #fff3cd;
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+
+.section h2 {
+  margin: 0 0 6px;
+  font-size: 0.95rem;
+}
+
+.hint {
+  margin: 0 0 6px;
+  font-size: 0.8rem;
+  color: #555;
+}
+
+.muted {
+  color: #666;
+  font-size: 0.85rem;
+}
+
+.json {
+  margin: 0;
+  padding: 8px;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  overflow: auto;
+  max-height: 200px;
+}
+
+.json.small {
+  max-height: 120px;
+}
+
+.textarea {
+  width: 100%;
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  padding: 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  resize: vertical;
+}
+
+button {
+  padding: 6px 12px;
+  border-radius: 4px;
+  border: 1px solid #333;
+  background: #333;
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: #fff;
+  color: #333;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.edit-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.edit-list li {
+  padding: 8px 0;
+  border-bottom: 1px solid #e5e5e5;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+}
+
+.modal {
+  background: #fff;
+  padding: 20px;
+  border-radius: 8px;
+  min-width: 280px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+}
+
+.modal h2 {
+  margin: 0 0 12px;
+  font-size: 1rem;
+}
+
+@media (max-width: 900px) {
+  .layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: 50vh auto;
+  }
+}

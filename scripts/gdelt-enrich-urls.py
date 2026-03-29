@@ -60,6 +60,15 @@ from domain_meta import (  # noqa: E402
     get_gkg_theme_sets,
     load_domain_meta,
 )
+from domain_paths import (  # noqa: E402
+    ensure_event_id_column,
+    meta_path_default,
+    output_prefix,
+    urls_csv,
+    urls_enriched_csv,
+    urls_geocoded_csv,
+    urls_high_confidence_csv,
+)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -285,6 +294,7 @@ def main(
     # Load your article list
     print(f"\nLoading articles from: {input_csv}")
     articles = pd.read_csv(input_csv, dtype=str)
+    articles = ensure_event_id_column(articles)
     print(f"  → {len(articles)} articles loaded")
 
     required = {"url", "seendate"}
@@ -441,16 +451,15 @@ Next steps:
 
 if __name__ == "__main__":
     _root = Path(__file__).resolve().parent.parent
-    _data = _root / "data"
     parser = argparse.ArgumentParser(description="Enrich GDELT article list with GKG geocoding + themes")
-    parser.add_argument("--input",     default=str(_data / "hwc_urls.csv"),
-                        help="Input CSV from gdelt-fetch-urls.py")
-    parser.add_argument("--enriched",  default=str(_data / "hwc_urls_enriched.csv"))
-    parser.add_argument("--geocoded",  default=str(_data / "hwc_urls_geocoded.csv"))
-    parser.add_argument("--high-conf", default=str(_data / "hwc_urls_high_confidence.csv"))
+    parser.add_argument("--input",     default=None,
+                        help="Input CSV from gdelt-fetch-urls.py (default: {prefix}_urls.csv from --meta)")
+    parser.add_argument("--enriched",  default=None)
+    parser.add_argument("--geocoded",  default=None)
+    parser.add_argument("--high-conf", default=None)
     parser.add_argument(
         "--meta",
-        default=str(_root / "meta" / "hwc_india_conflict_meta.json"),
+        default=str(meta_path_default(_root)),
         help="Domain meta (gkg_theme_sets, gkg_geography)",
     )
     parser.add_argument("--max-files", type=int, default=200,
@@ -458,6 +467,15 @@ if __name__ == "__main__":
     parser.add_argument("--sleep",     type=float, default=0.5,
                         help="Seconds to sleep between file downloads")
     args = parser.parse_args()
+    _pfx = output_prefix(args.meta)
+    if args.input is None:
+        args.input = str(urls_csv(_root, _pfx))
+    if args.enriched is None:
+        args.enriched = str(urls_enriched_csv(_root, _pfx))
+    if args.geocoded is None:
+        args.geocoded = str(urls_geocoded_csv(_root, _pfx))
+    if args.high_conf is None:
+        args.high_conf = str(urls_high_confidence_csv(_root, _pfx))
 
     main(
         input_csv=args.input,
