@@ -12,9 +12,14 @@ type LayerInfo = {
   geojson_path: string | null;
 };
 
+type MergeGroup = { id: string; label?: string; event_types?: string[] };
+
 type StylePayload = {
   colors_hex: Record<string, string>;
   category_field: string;
+  merge_groups?: MergeGroup[];
+  singleton_event_types?: string[];
+  fallback_category?: string;
 };
 
 type PendingEdit = {
@@ -93,6 +98,38 @@ function escapeAttr(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
 
+function propText(props: Record<string, unknown>, key: string): string {
+  const v = props[key];
+  if (v === null || v === undefined) return "";
+  const s = String(v).trim();
+  if (s === "" || s.toLowerCase() === "nan" || s.toLowerCase() === "none") return "";
+  return s;
+}
+
+function buildLegendEntries(style: StylePayload): { id: string; label: string; color: string }[] {
+  const colors = style.colors_hex || {};
+  const labelById: Record<string, string> = {};
+  for (const g of style.merge_groups || []) {
+    if (g.id) labelById[g.id] = (g.label || g.id).trim();
+  }
+  for (const s of style.singleton_event_types || []) {
+    if (labelById[s] === undefined) labelById[s] = s.replace(/_/g, " ");
+  }
+  if (style.fallback_category && labelById[style.fallback_category] === undefined) {
+    labelById[style.fallback_category] = style.fallback_category.replace(/_/g, " ");
+  }
+  const out: { id: string; label: string; color: string }[] = [];
+  for (const [id, color] of Object.entries(colors)) {
+    out.push({
+      id,
+      label: labelById[id] || id.replace(/_/g, " "),
+      color,
+    });
+  }
+  out.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
+  return out;
+}
+
 /** Resolve API path against Vite `base` (e.g. `/gdelt-wildlife/api/...` when deployed under a subpath). */
 function apiUrl(path: string): string {
   const base = import.meta.env.BASE_URL || "/";
@@ -133,11 +170,24 @@ export default function App() {
   const [loginUser, setLoginUser] = useState("");
   const [loginPass, setLoginPass] = useState("");
   const [pendingEdits, setPendingEdits] = useState<PendingEdit[]>([]);
+  const [legendOpen, setLegendOpen] = useState(true);
 
   const filteredGeojson = useMemo(
     () => (rawGeojson ? filterFeatures(rawGeojson, search) : null),
     [rawGeojson, search],
   );
+
+  const layerDownloadNames = useMemo(() => {
+    if (!layerId) return null;
+    const layer = layers.find((l) => l.id === layerId);
+    const prefix = layer?.prefix ?? layerId;
+    return {
+      geojson: `${prefix}_points.geojson`,
+      style: `${prefix}_style.json`,
+      geojsonHref: apiUrl(`/api/layers/${encodeURIComponent(layerId)}/geojson`),
+      styleHref: apiUrl(`/api/layers/${encodeURIComponent(layerId)}/style`),
+    };
+  }, [layerId, layers]);
 
   useEffect(() => {
     api<LayerInfo[]>("/api/meta/layers")
@@ -252,15 +302,33 @@ export default function App() {
         const props = (feat.properties || {}) as Record<string, unknown>;
         const title = String(props.title ?? "Untitled");
         const url = String(props.url ?? "").trim();
+        const eventDate = propText(props, "event_date");
+        const primaryLoc = propText(props, "primary_location");
         const g = feat.geometry;
         if (g?.type === "Point" && Array.isArray(g.coordinates)) {
           const [lng, lat] = g.coordinates as [number, number];
           popupRef.current?.remove();
           const safeUrl = /^https?:\/\//i.test(url) ? url : "";
-          const body =
+          const titleBlock =
             safeUrl !== ""
-              ? `<div class="map-popup-inner"><a class="map-popup-link" href="${escapeAttr(safeUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(title)}</a></div>`
-              : `<div class="map-popup-inner">${escapeHtml(title)}</div>`;
+              ? `<a class="map-popup-link" href="${escapeAttr(safeUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(title)}</a>`
+              : escapeHtml(title);
+          const metaRows: string[] = [];
+          if (eventDate) {
+            metaRows.push(
+              `<div class="map-popup-row"><span class="map-popup-label">Date</span><span class="map-popup-value">${escapeHtml(eventDate)}</span></div>`,
+            );
+          }
+          if (primaryLoc) {
+            metaRows.push(
+              `<div class="map-popup-row"><span class="map-popup-label">Location</span><span class="map-popup-value">${escapeHtml(primaryLoc)}</span></div>`,
+            );
+          }
+          const metaBlock =
+            metaRows.length > 0
+              ? `<div class="map-popup-meta">${metaRows.join("")}</div>`
+              : "";
+          const body = `<div class="map-popup-inner"><div class="map-popup-title">${titleBlock}</div>${metaBlock}</div>`;
           const popup = new maplibregl.Popup({
             closeButton: true,
             closeOnClick: true,
@@ -404,9 +472,47 @@ export default function App() {
 
   const props = (selected?.properties || {}) as Record<string, unknown>;
 
+  const legendEntries = useMemo(
+    () => (stylePayload ? buildLegendEntries(stylePayload) : []),
+    [stylePayload],
+  );
+
   return (
     <div className="layout">
-      <div ref={mapEl} className="map" />
+      <div className="map-wrap">
+        <div ref={mapEl} className="map" />
+        {stylePayload && legendEntries.length > 0 && (
+          <div
+            className={`map-legend ${legendOpen ? "map-legend--open" : "map-legend--collapsed"}`}
+          >
+            <button
+              type="button"
+              className="map-legend-toggle"
+              onClick={() => setLegendOpen((o) => !o)}
+              aria-expanded={legendOpen}
+            >
+              {legendOpen ? "Hide legend" : "Legend"}
+            </button>
+            {legendOpen && (
+              <div className="map-legend-body">
+                <div className="map-legend-heading">Event type</div>
+                <ul className="map-legend-list">
+                  {legendEntries.map((row) => (
+                    <li key={row.id} className="map-legend-item">
+                      <span
+                        className="map-legend-swatch"
+                        style={{ backgroundColor: row.color }}
+                        aria-hidden
+                      />
+                      <span className="map-legend-label">{row.label}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
       <aside className="panel">
         <header className="panel-head">
           <h1>GDELT map</h1>
@@ -440,6 +546,24 @@ export default function App() {
             ))}
           </select>
         </label>
+
+        {layerDownloadNames && (
+          <div className="layer-downloads muted">
+            <a
+              href={layerDownloadNames.geojsonHref}
+              download={layerDownloadNames.geojson}
+            >
+              Download GeoJSON
+            </a>
+            <span aria-hidden> · </span>
+            <a
+              href={layerDownloadNames.styleHref}
+              download={layerDownloadNames.style}
+            >
+              Download style (JSON)
+            </a>
+          </div>
+        )}
 
         <label className="field">
           <span>Search</span>

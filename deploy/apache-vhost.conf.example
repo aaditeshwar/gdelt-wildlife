@@ -1,50 +1,65 @@
-# Apache 2.4: serve the app at https://SERVERNAME/gdelt-wildlife/ (or http).
-# Uvicorn stays on localhost; Apache strips the /gdelt-wildlife prefix when proxying.
+# Apache 2.4: app at https://SERVERNAME/gdelt-wildlife/
 #
-# Build the frontend with the same subpath:
+# This matches the usual split: Apache serves frontend/dist (Alias + FallbackResource),
+# and only /api is proxied to Uvicorn. Uvicorn does not need to serve static files for
+# public traffic (see README — alternative: ProxyPass everything to Uvicorn if you prefer).
+#
+# Build the SPA with the same path:
 #   cd frontend && VITE_BASE_PATH=/gdelt-wildlife/ npm run build
 #
-# Enable modules:
-#   sudo a2enmod proxy proxy_http headers ssl
-# Install site:
-#   sudo cp deploy/apache-vhost.conf.example /etc/apache2/sites-available/gdelt-wildlife.conf
-#   sudo a2ensite gdelt-wildlife
+# Adjust REPO_ROOT below, ServerName, and SSL paths.
+#
+#   sudo a2enmod proxy proxy_http headers ssl alias
 #   sudo apache2ctl configtest && sudo systemctl reload apache2
 
-# --- HTTP (port 80): optional; use alone or with HTTPS below ---
+# --- HTTP (port 80) ---
 <VirtualHost *:80>
-    ServerName server.example.org
+    ServerName 10.237.20.197
     ServerAdmin webmaster@localhost
 
     ProxyPreserveHost On
     RequestHeader set X-Forwarded-Proto "http"
     RequestHeader set X-Forwarded-Port "80"
 
-    # Must match VITE_BASE_PATH (trailing slash on first segment)
-    ProxyPass /gdelt-wildlife/ http://127.0.0.1:8000/
-    ProxyPassReverse /gdelt-wildlife/ http://127.0.0.1:8000/
+    # API to Uvicorn (list these before Alias so /api wins over static)
+    ProxyPass /gdelt-wildlife/api http://127.0.0.1:8000/api
+    ProxyPassReverse /gdelt-wildlife/api http://127.0.0.1:8000/api
+
+    # SPA: static build (same pattern as archive-search / agromet-advisory)
+    # Replace with your repo path, e.g. /home/aseth/core-stack/gdelt-wildlife/frontend/dist
+    Alias /gdelt-wildlife "/srv/gdelt-wildlife/frontend/dist"
+    <Directory "/srv/gdelt-wildlife/frontend/dist">
+        Require all granted
+        Options -Indexes +FollowSymLinks
+        AllowOverride None
+        FallbackResource /gdelt-wildlife/index.html
+    </Directory>
 
     ErrorLog ${APACHE_LOG_DIR}/gdelt-wildlife-error.log
     CustomLog ${APACHE_LOG_DIR}/gdelt-wildlife-access.log combined
 </VirtualHost>
 
-# --- HTTPS (port 443): adjust ServerName and certificate paths ---
-<VirtualHost *:443>
-    ServerName server.example.org
-    ServerAdmin webmaster@localhost
+# --- HTTPS (port 443): optional; duplicate the same ProxyPass + Alias inside ---
+# <VirtualHost *:443>
+#     ServerName 10.237.20.197
+#     SSLEngine on
+#     SSLCertificateFile ...
+#     SSLCertificateKeyFile ...
+#     ProxyPreserveHost On
+#     RequestHeader set X-Forwarded-Proto "https"
+#     RequestHeader set X-Forwarded-Port "443"
+#     ProxyPass /gdelt-wildlife/api http://127.0.0.1:8000/api
+#     ProxyPassReverse /gdelt-wildlife/api http://127.0.0.1:8000/api
+#     Alias /gdelt-wildlife "/srv/gdelt-wildlife/frontend/dist"
+#     <Directory "/srv/gdelt-wildlife/frontend/dist">
+#         Require all granted
+#         Options -Indexes +FollowSymLinks
+#         AllowOverride None
+#         FallbackResource /gdelt-wildlife/index.html
+#     </Directory>
+# </VirtualHost>
 
-    SSLEngine on
-    SSLCertificateFile /etc/letsencrypt/live/server.example.org/fullchain.pem
-    SSLCertificateKeyFile /etc/letsencrypt/live/server.example.org/privkey.pem
-    # Include /etc/letsencrypt/options-ssl-apache.conf
-
-    ProxyPreserveHost On
-    RequestHeader set X-Forwarded-Proto "https"
-    RequestHeader set X-Forwarded-Port "443"
-
-    ProxyPass /gdelt-wildlife/ http://127.0.0.1:8000/
-    ProxyPassReverse /gdelt-wildlife/ http://127.0.0.1:8000/
-
-    ErrorLog ${APACHE_LOG_DIR}/gdelt-wildlife-ssl-error.log
-    CustomLog ${APACHE_LOG_DIR}/gdelt-wildlife-ssl-access.log combined
-</VirtualHost>
+# --- Alternative (not used if you use Alias above): send all traffic to Uvicorn ---
+# FastAPI also mounts frontend/dist; Apache would only need:
+#   ProxyPass /gdelt-wildlife/ http://127.0.0.1:8000/
+#   ProxyPassReverse /gdelt-wildlife/ http://127.0.0.1:8000/

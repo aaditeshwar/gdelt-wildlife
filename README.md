@@ -129,12 +129,12 @@ The sample file ships with user `admin` and password **`changeme`** (change befo
 
 ### Production: Apache reverse proxy + systemd (Uvicorn)
 
-Deploy the **built** SPA and run **Uvicorn bound to localhost** only; **Apache** terminates TLS and proxies HTTP(S) to Uvicorn. Example templates live under `deploy/`:
+Deploy the **built** SPA and run **Uvicorn bound to localhost** only. **Apache** can (recommended) **serve `frontend/dist` with `Alias` + `FallbackResource`** and **proxy only `/gdelt-wildlife/api`** to Uvicorn — the same pattern as other apps on your host. Alternatively, Apache can proxy **all** of `/gdelt-wildlife/` to Uvicorn and let FastAPI’s `StaticFiles` serve the SPA (simpler, fewer moving parts). Example templates:
 
 | File | Purpose |
 |------|---------|
 | `deploy/gdelt-wildlife.service.example` | systemd unit for Uvicorn |
-| `deploy/apache-vhost.conf.example` | Apache `VirtualHost` with `ProxyPass` |
+| `deploy/apache-vhost.conf.example` | Apache: `Alias` → `frontend/dist` + `ProxyPass` → `/api` only (with commented alternative) |
 
 **1. On the server (paths are examples — use your own)**
 
@@ -175,12 +175,16 @@ sudo apache2ctl configtest && sudo systemctl reload apache2
 
 Obtain certificates (e.g. Certbot) and point `SSLCertificateFile` / `SSLCertificateKeyFile` at your PEM files.
 
-The vhost proxies **`/gdelt-wildlife/`** on the server to **`http://127.0.0.1:8000/`**, so the backend still sees paths like **`/api/...`** and **`/`** for the SPA (no code changes in FastAPI). Users open **`http(s)://SERVERNAME/gdelt-wildlife/`**. Use either the port **80** block (HTTP), the **443** block (HTTPS), or both; edit `ServerName` and SSL paths.
+**Recommended vhost (in `deploy/apache-vhost.conf.example`):** **`ProxyPass /gdelt-wildlife/api`** → **`http://127.0.0.1:8000/api`**, and **`Alias /gdelt-wildlife`** → **`…/frontend/dist`** with **`FallbackResource /gdelt-wildlife/index.html`** for client-side routes. Put **`ProxyPass` lines before `Alias`** so API requests are not served as static files. You can merge those blocks into an existing `VirtualHost` alongside archive-search / agromet-advisory.
+
+**Alternative:** proxy **`/gdelt-wildlife/`** entirely to Uvicorn (`ProxyPass /gdelt-wildlife/ http://127.0.0.1:8000/`); FastAPI then serves both the API and static files from `frontend/dist`. No `Alias` needed.
+
+Users open **`http(s)://SERVERNAME/gdelt-wildlife/`**. Edit `ServerName`, `Alias` paths, and SSL blocks to match your server.
 
 **4. Port and path consistency**
 
 - **`ExecStart` `--port`**, **`ProxyPass`** target port (`127.0.0.1:8000`), and firewall rules must match.
-- **`VITE_BASE_PATH`** at build time must match the Apache path (e.g. `/gdelt-wildlife/` with a trailing slash in both Vite and `ProxyPass /gdelt-wildlife/`).
+- **`VITE_BASE_PATH`** at build time must match the public path (e.g. `/gdelt-wildlife/` for both `Alias` and asset URLs in `index.html`).
 
 **5. Operations**
 
