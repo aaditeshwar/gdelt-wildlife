@@ -8,7 +8,7 @@ This project pulls India HWC-related articles from GDELT, enriches them with GKG
 |------|---------|
 | `data/` | CSV inputs and intermediate outputs (default paths for scripts) |
 | `outputs/` | GeoJSON, QGIS QML styles, and the narrative text report from full-text extraction |
-| `meta/` | Domain metadata: GDELT keywords, GKG theme sets, LLM prompts, GeoJSON/QML (`hwc_india_conflict_meta.json`, `event_domain_template.json`) |
+| `meta/` | Domain metadata: GDELT keywords, GKG theme sets, LLM prompts, GeoJSON/QML (`hwc_india_conflict_meta.json`, `event_domain_template.json`). For new domains, see **[META_GENERATION_README.md](meta/META_GENERATION_README.md)**. |
 | `scripts/domain_meta.py` | Shared loader for meta JSON (used by fetch, enrich, full-text scripts) |
 | `scripts/domain_paths.py` | `output_prefix(meta)` and standard `data/` / `outputs/` filenames; deterministic `event_id` backfill |
 | `scripts/` | Runnable pipeline steps |
