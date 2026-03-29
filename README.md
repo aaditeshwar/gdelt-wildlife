@@ -18,6 +18,8 @@ This project pulls India HWC-related articles from GDELT, enriches them with GKG
 
 Run scripts from the **repository root** (paths below assume that).
 
+**Environment variables:** copy **[`.env.example`](.env.example)** to `.env` at the repo root for pipeline defaults (Google Maps geocoding, Ollama URL/model, BigQuery project). OS env vars override file values. The web stack uses **`server/.env`** and **`frontend/.env`** separately (`server/.env.example`, `frontend/.env.example`).
+
 ### Filename prefix from `--meta`
 
 For each script, the default CSV/GeoJSON paths use a short **prefix** derived from the meta JSON filename:

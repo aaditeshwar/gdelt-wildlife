@@ -20,8 +20,11 @@ Setup (one-time):
   3. Create a GCP project (free tier is fine) and note your PROJECT_ID.
   4. Enable the BigQuery API in your GCP project console.
 
+  Set ``GOOGLE_CLOUD_PROJECT`` in repo root ``.env`` (see ``.env.example``) or pass ``--project``.
+
 Usage:
     python scripts/gdelt-enrich-urls-bigquery.py --project YOUR_GCP_PROJECT_ID
+    python scripts/gdelt-enrich-urls-bigquery.py   # uses GOOGLE_CLOUD_PROJECT from .env
     python scripts/gdelt-enrich-urls-bigquery.py --project myproject --input data/hwc_urls.csv
 
 Outputs (under data/ by default):
@@ -33,6 +36,7 @@ Outputs (under data/ by default):
 
 import argparse
 import json
+import os
 import re
 import sys
 from datetime import datetime, timedelta
@@ -48,6 +52,7 @@ if str(_SCRIPTS) not in sys.path:
 from domain_meta import get_gkg_geography, get_gkg_theme_sets, load_domain_meta  # noqa: E402
 from domain_paths import (  # noqa: E402
     ensure_event_id_column,
+    load_repo_env,
     meta_path_default,
     output_prefix,
     urls_csv,
@@ -383,12 +388,19 @@ Next steps:
 
 
 if __name__ == "__main__":
+    load_repo_env()
     _root = Path(__file__).resolve().parent.parent
     p = argparse.ArgumentParser(
         description="Enrich GDELT article URLs with GKG data via BigQuery"
     )
-    p.add_argument("--project",   required=True,
-                   help="GCP project ID (e.g. my-gcp-project-123)")
+    p.add_argument(
+        "--project",
+        default=(os.environ.get("GOOGLE_CLOUD_PROJECT") or "").strip() or None,
+        help=(
+            "GCP project ID (e.g. my-gcp-project-123). "
+            "Default: GOOGLE_CLOUD_PROJECT from environment or repo root .env"
+        ),
+    )
     p.add_argument(
         "--meta",
         default=str(meta_path_default(_root)),
@@ -413,6 +425,11 @@ if __name__ == "__main__":
         ),
     )
     args = p.parse_args()
+    if not args.project:
+        p.error(
+            "GCP project required: pass --project or set GOOGLE_CLOUD_PROJECT "
+            "(e.g. in repo root .env — see .env.example) or export it in your shell."
+        )
     _pfx = output_prefix(args.meta)
     if args.input is None:
         args.input = str(urls_csv(_root, _pfx))

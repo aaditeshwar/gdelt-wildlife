@@ -23,9 +23,11 @@ Requirements:
     - CHROME_NO_SANDBOX=1 — add --no-sandbox --disable-dev-shm-usage (Linux/WSL/Docker)
     - Selenium proxy: use CLI ``--proxy-server URL`` (not environment variables).
 
-API keys needed:
-    GOOGLE_MAPS_API_KEY   — https://console.cloud.google.com (Geocoding API)
-                            (optional — falls back to GDELT coords if absent)
+API keys / URLs (optional):
+    Copy ``.env.example`` to ``.env`` at the repo root, or set OS environment variables.
+    GOOGLE_MAPS_API_KEY — https://console.cloud.google.com (Geocoding API); optional.
+    OLLAMA_BASE_URL     — default http://127.0.0.1:11434
+    OLLAMA_MODEL        — default qwen2.5:14b
 
 Two-run workflow
 ----------------
@@ -67,26 +69,41 @@ from domain_paths import (  # noqa: E402
     final_report_csv,
     final_report_txt,
     final_report_updated_csv,
+    load_repo_env,
     meta_path_default,
     output_prefix,
     prefix_from_report_csv,
     urls_geocoded_csv,
 )
 
-# ── Config ────────────────────────────────────────────────────────────────────
+load_repo_env()
 
-OLLAMA_BASE_URL     = "http://10.237.20.197:11434"
-DEFAULT_MODEL       = "qwen2.5:14b"
-GOOGLE_MAPS_API_KEY = ""
+# ── Config (defaults from OS env / repo root .env; see .env.example) ────────────
 
-JINA_BASE         = "https://r.jina.ai/"
+
+def _env_int(key: str, default: int) -> int:
+    raw = os.environ.get(key)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return int(str(raw).strip())
+    except ValueError:
+        return default
+
+
+OLLAMA_BASE_URL = (os.environ.get("OLLAMA_BASE_URL") or "http://127.0.0.1:11434").strip()
+DEFAULT_MODEL = (os.environ.get("OLLAMA_MODEL") or "qwen2.5:14b").strip() or "qwen2.5:14b"
+GOOGLE_MAPS_API_KEY = (os.environ.get("GOOGLE_MAPS_API_KEY") or "").strip()
+
+_jina = (os.environ.get("JINA_BASE") or "https://r.jina.ai/").strip()
+JINA_BASE = _jina if _jina.endswith("/") else _jina + "/"
 GEOCODING_URL     = "https://maps.googleapis.com/maps/api/geocode/json"
 MAX_ARTICLE_CHARS = 6000   # truncate very long articles before sending to LLM
 SLEEP_JINA        = 1.5    # seconds between Jina requests (be polite)
 SLEEP_LLM         = 0.2    # seconds between Ollama requests (local, so minimal)
 SLEEP_GEOCODE     = 0.2    # seconds between geocoding requests
 SLEEP_SELENIUM    = 2.0    # pause after page load for JS-rendered article body
-OLLAMA_TIMEOUT    = 120    # seconds — 14b model may be slow under load
+OLLAMA_TIMEOUT    = _env_int("OLLAMA_TIMEOUT", 120)  # seconds — 14b model may be slow under load
 MIN_ARTICLE_CHARS = 200    # same threshold as Jina / trafilatura fetch
 SELENIUM_PAGE_LOAD_TIMEOUT = 60  # seconds for driver.get()
 

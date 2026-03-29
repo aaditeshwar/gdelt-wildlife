@@ -1,0 +1,357 @@
+{
+  "schema_version": "1.0",
+  "domain": {
+    "id": "cropdamage_india",
+    "title": "Crop damage events (India)",
+    "description": "Specific, real incidents in which standing crops or harvested produce were damaged or destroyed in India, caused by weather extremes (unseasonal rainfall, hail, flooding, drought, heat), pest or disease outbreaks (locusts, armyworm, whitefly, blast), or other acute stressors. Used by the gdelt-wildlife pipeline: scripts/gdelt-fetch-urls.py → gdelt-enrich-urls-bigquery.py → gdelt-get-full-text.py → convert_csv_to_geojson.py.",
+    "related_scripts": [
+      "scripts/gdelt-fetch-urls.py",
+      "scripts/gdelt-enrich-urls.py",
+      "scripts/gdelt-enrich-urls-bigquery.py",
+      "scripts/gdelt-get-full-text.py",
+      "scripts/convert_csv_to_geojson.py"
+    ]
+  },
+
+  "gdelt_doc_fetch": {
+    "keywords": [
+      "crop damage India",
+      "crop loss India",
+      "unseasonal rain crop damage",
+      "hailstorm crop damage India",
+      "farmers crop destroyed",
+      "standing crop damaged",
+      "locust attack India crops",
+      "pest attack India crops",
+      "drought crop failure India",
+      "untimely rain wheat damage",
+      "crop inundation flood India",
+      "heat wave crop damage India",
+      "kharif rabi crop loss",
+      "mandi crop damage compensation",
+      "fasal bima crop loss"
+    ],
+    "country": "IN",
+    "language": "English",
+    "max_records": 250,
+    "sleep_between_queries_seconds": 3,
+    "years_back": 5,
+    "window_months": 3,
+    "summary_banner": "GDELT Crop Damage Feasibility Check — India",
+    "summary_title": "GDELT Crop Damage India — Feasibility Summary"
+  },
+
+  "gkg_theme_sets": {
+    "_comment_primary": "primary_themes identifies the agriculture/food domain. Sourced from: ENV_* GDELT taxonomy; WB_* World Bank taxonomy (confirmed IDs from GDELT CartoDB tutorial and WorldBank vocabulary); FOOD_SECURITY is a confirmed plain GKG theme.",
+    "primary_themes": [
+      "ENV_AGRICULTURE",
+      "FOOD_SECURITY",
+      "WB_199_FOOD_SECURITY",
+      "WB_435_AGRICULTURE_AND_FOOD_SECURITY",
+      "WB_469_CROPS",
+      "WB_471_IRRIGATION_AND_DRAINAGE",
+      "WB_473_AGRICULTURAL_PRODUCTIVITY",
+      "WB_475_LIVESTOCK",
+      "WB_478_PEST_MANAGEMENT",
+      "WB_2286_DROUGHT",
+      "WB_2069_AGRICULTURAL_RISK_MANAGEMENT",
+      "ENV_CLIMATECHANGE",
+      "NATURAL_DISASTER",
+      "ENV_DROUGHT"
+    ],
+    "_comment_harm": "harm_themes indicates actual damage/loss occurred — not forecasts or policy. Includes economic loss signals (ECON_*), CRISISLEX harm tags, and the plain AFFECT/KILL tags used in the HWC domain.",
+    "harm_themes": [
+      "AFFECT",
+      "CRISISLEX_CRISISLEXREC",
+      "ECON_BANKRUPTCY",
+      "ECON_COST_OF_LIVING",
+      "WB_730_NATURAL_DISASTERS",
+      "WB_862_CROP_INSURANCE",
+      "WB_732_DISASTER_RISK_MANAGEMENT"
+    ],
+    "high_confidence_theme_score_min": 3,
+    "theme_score_guide": {
+      "0": "No agriculture or harm theme match — likely unrelated article",
+      "1": "Agriculture/food theme only — may be policy, forecast, or market article",
+      "2": "Harm/loss theme only — disaster or economic loss, but not agriculture-specific",
+      "3": "Both agriculture AND harm themes matched — high-confidence crop damage article"
+    },
+    "_design_notes_themes": {
+      "confirmed_plain_themes": [
+        "NATURAL_DISASTER — confirmed in ONS/GDELT disaster studies and GDELT blog",
+        "FOOD_SECURITY — confirmed in GDELT CartoDB tutorial as distinct from WB_199_FOOD_SECURITY",
+        "AFFECT, CRISISLEX_* — same set used in hwc_india_conflict_meta.json, confirmed in GKG codebook"
+      ],
+      "confirmed_wb_themes": [
+        "WB_199_FOOD_SECURITY — explicitly named in GDELT CartoDB tutorial",
+        "WB_435_AGRICULTURE_AND_FOOD_SECURITY — explicitly named in GDELT CartoDB tutorial",
+        "WB_469_CROPS — World Bank taxonomy ID 469 = Crops",
+        "WB_471_IRRIGATION_AND_DRAINAGE — WB ID 471",
+        "WB_473_AGRICULTURAL_PRODUCTIVITY — WB ID 473",
+        "WB_475_LIVESTOCK — WB ID 475; relevant for mixed crop-livestock farming loss",
+        "WB_478_PEST_MANAGEMENT — WB ID 478; locust/armyworm/whitefly attacks",
+        "WB_2286_DROUGHT — WB ID 2286",
+        "WB_2069_AGRICULTURAL_RISK_MANAGEMENT — WB ID 2069; crop insurance/compensation articles",
+        "WB_730_NATURAL_DISASTERS — WB ID 730; in harm set since it co-occurs with damage",
+        "WB_862_CROP_INSURANCE — WB ID 862; articles about PMFBY payouts signal a damage event occurred",
+        "WB_732_DISASTER_RISK_MANAGEMENT — WB ID 732"
+      ],
+      "false_positive_risks": [
+        "WB_435 is very broad — many market/policy articles will score 1; the harm_themes gate at score 3 is essential",
+        "ECON_BANKRUPTCY may fire on non-farm bankruptcy news — monitor false-positive rate in pilot",
+        "NATURAL_DISASTER in primary_themes will co-occur with floods/cyclones that are not primarily crop stories; the LLM gate (is_crop_damage_event) filters these",
+        "fasal bima / PMFBY compensation articles score 3 (crop insurance + agriculture) but describe past events — LLM must check event_occurred vs. policy-only"
+      ],
+      "bigquery_validation_query": "WITH nested AS (SELECT SPLIT(RTRIM(REGEXP_REPLACE(V2Themes, r',\\d+;', ';'), ';'), ';') themes FROM `gdelt-bq.gdeltv2.gkg_partitioned` WHERE _PARTITIONTIME >= TIMESTAMP('2021-01-01') AND (V2Themes LIKE '%AGRICULTURE%' OR V2Themes LIKE '%CROP%') AND V2Locations LIKE '%India%') SELECT theme, COUNT(1) cnt FROM nested, UNNEST(themes) AS theme GROUP BY theme ORDER BY cnt DESC LIMIT 100"
+    }
+  },
+
+  "gkg_geography": {
+    "location_country_codes": ["IN", "IND", "India"],
+    "subnational_loc_types": [3, 4, 5]
+  },
+
+  "llm_extraction": {
+    "system_prompt_lines": [
+      "You are a meticulous agricultural loss analyst specialising in India.",
+      "Your task is to analyse Indian news articles and extract structured data about",
+      "specific crop damage events. You must respond ONLY with a single clean",
+      "JSON object — no markdown, no explanations, nothing outside the JSON."
+    ],
+    "extraction_prompt_lines": [
+      "Analyse this news article and extract crop damage event data.",
+      "",
+      "Publication date: {pub_date}",
+      "URL: {url}",
+      "GDELT candidate locations: {gdelt_locations}",
+      "",
+      "Article text:",
+      "{article_text}",
+      "",
+      "---",
+      "",
+      "Follow these steps carefully:",
+      "",
+      "STEP 1 — Is this an actual crop damage event?",
+      "A crop damage event is a specific, real incident that has already occurred involving:",
+      "  - Standing crops destroyed or damaged by weather (rain, hail, flood, frost, heat, drought)",
+      "  - Crops lost to a pest, disease, or insect outbreak (locust, armyworm, whitefly, blast, blight)",
+      "  - Stored or harvested produce destroyed by flooding, fire, or infestation",
+      "  - Livestock deaths that are secondary to the same weather/pest event",
+      "",
+      "NOT a crop damage event:",
+      "  - Forecasts, warnings, or advisories about possible future crop damage",
+      "  - Policy discussions, budget allocations, or scheme launches (e.g. PMFBY expansion)",
+      "  - Compensation announcements without a described triggering incident",
+      "  - General statistics or annual crop production reports",
+      "  - Price changes, mandi rates, or commodity market stories",
+      "  - Multiple separate incidents summarised together without a specific location",
+      "  - Research papers, agricultural extension advice, or awareness campaigns",
+      "",
+      "If NOT a crop damage event → output the 'no event' JSON (see format below) and stop.",
+      "",
+      "STEP 2 — Extract event details (only if Step 1 = true)",
+      "  a) damage_cause: primary cause of the damage. Use one of:",
+      "     unseasonal_rain, hailstorm, flood, drought, heat_wave, frost,",
+      "     cyclone, locust, armyworm, pest_other, disease_fungal,",
+      "     disease_bacterial, disease_viral, waterlogging, fire, other (specify)",
+      "  b) crop_type: primary crop affected. Use lowercase common name.",
+      "     Examples: wheat, rice, paddy, mustard, potato, tomato, onion, cotton,",
+      "     sugarcane, maize, soybean, chilli, groundnut, pulses, vegetables,",
+      "     fruit orchards, mixed/multiple, unknown",
+      "  c) crop_season: kharif, rabi, zaid, unknown",
+      "  d) damage_extent: qualitative severity as reported.",
+      "     Options: total_loss, severe (>50% loss), moderate (25-50%), minor (<25%), unknown",
+      "  e) area_affected_ha: numeric hectares mentioned in the article, or null if not stated",
+      "  f) farmers_affected: numeric count of farmers mentioned, or null if not stated",
+      "  g) economic_loss_inr: numeric loss in INR (any unit) as reported, or null.",
+      "     Record the raw number and unit separately in location_notes.",
+      "  h) event_date: date the damage occurred (not publication date).",
+      "     Format YYYY-MM-DD. If a range, use the start date.",
+      "     Use publication date if only 'recently' or similar. Null if completely unknown.",
+      "  i) primary_location: the single most specific place name explicitly stated",
+      "     as where the damage occurred. Prefer village > block/taluka > district.",
+      "     Write as 'Place, District, State, India'.",
+      "     Example: 'Palwal, Palwal, Haryana, India'",
+      "     Use null if no specific location is mentioned.",
+      "  j) location_type: how specific is primary_location?",
+      "     Options: village, block, taluka, town, district, state, unknown",
+      "  k) location_notes: additional context — other affected villages, mandal name,",
+      "     river that flooded, block office, economic loss unit. Max 150 chars.",
+      "  l) confidence: your overall confidence in the extraction.",
+      "     Options: high, medium, low",
+      "",
+      "STEP 3 — Location reconciliation",
+      "  Compare primary_location against the GDELT candidate locations provided above.",
+      "  If one matches (same place, same or coarser specificity), record it.",
+      "  If none match, record null.",
+      "",
+      "Output format (always return exactly this JSON structure):",
+      "",
+      "{{",
+      "  \"is_crop_damage_event\": true or false,",
+      "  \"damage_cause\": \"...\",",
+      "  \"crop_type\": \"...\",",
+      "  \"crop_season\": \"kharif/rabi/zaid/unknown\",",
+      "  \"damage_extent\": \"total_loss/severe/moderate/minor/unknown\",",
+      "  \"area_affected_ha\": null,",
+      "  \"farmers_affected\": null,",
+      "  \"economic_loss_inr\": null,",
+      "  \"event_date\": \"YYYY-MM-DD or null\",",
+      "  \"primary_location\": \"Place, District, State, India or null\",",
+      "  \"location_type\": \"...\",",
+      "  \"location_notes\": \"...\",",
+      "  \"gdelt_location_match\": \"matched GDELT location or null\",",
+      "  \"confidence\": \"high/medium/low\",",
+      "  \"extraction_notes\": \"any caveats or uncertainties, max 150 chars\"",
+      "}}"
+    ],
+    "extraction_prompt_placeholders": [
+      "pub_date",
+      "url",
+      "gdelt_locations",
+      "article_text"
+    ],
+    "notes": "extraction_prompt_lines is joined with newlines then formatted with .format(**kwargs). Literal braces in the JSON example use doubled {{ }} in the joined string."
+  },
+
+  "data_binding": {
+    "input_formats": ["final_report_csv"],
+    "final_report_csv": {
+      "filter_hwc_events": {
+        "column": "is_crop_damage_event",
+        "true_values": ["true", "True", "TRUE", "1"]
+      },
+      "geometry": {
+        "longitude_column": "final_lon",
+        "latitude_column": "final_lat",
+        "crs": "EPSG:4326"
+      },
+      "properties_suggested": [
+        "url",
+        "title",
+        "pub_date",
+        "damage_cause",
+        "crop_type",
+        "crop_season",
+        "damage_extent",
+        "area_affected_ha",
+        "farmers_affected",
+        "economic_loss_inr",
+        "event_date",
+        "primary_location",
+        "location_type",
+        "confidence",
+        "geocode_source",
+        "location_notes",
+        "gdelt_location_match",
+        "fetch_method"
+      ]
+    }
+  },
+
+  "taxonomy": {
+    "event_type": {
+      "description": "Primary damage cause from LLM extraction (damage_cause field). Matches allowed_values in the extraction prompt.",
+      "allowed_values": [
+        "unseasonal_rain",
+        "hailstorm",
+        "flood",
+        "drought",
+        "heat_wave",
+        "frost",
+        "cyclone",
+        "locust",
+        "armyworm",
+        "pest_other",
+        "disease_fungal",
+        "disease_bacterial",
+        "disease_viral",
+        "waterlogging",
+        "fire",
+        "other"
+      ]
+    },
+    "crop_type": {
+      "description": "Primary crop affected. Lowercase common name from extraction prompt.",
+      "examples": [
+        "wheat", "rice", "paddy", "mustard", "potato", "tomato", "onion",
+        "cotton", "sugarcane", "maize", "soybean", "chilli", "groundnut",
+        "pulses", "vegetables", "fruit orchards", "mixed/multiple", "unknown"
+      ]
+    },
+    "damage_extent": {
+      "description": "Qualitative severity as reported by the article.",
+      "allowed_values": ["total_loss", "severe", "moderate", "minor", "unknown"]
+    },
+    "crop_season": {
+      "description": "Indian crop season.",
+      "allowed_values": ["kharif", "rabi", "zaid", "unknown"]
+    },
+    "location_type": {
+      "allowed_values": ["village", "block", "taluka", "town", "district", "state", "unknown"]
+    },
+    "confidence": {
+      "allowed_values": ["high", "medium", "low"]
+    }
+  },
+
+  "map_style": {
+    "category_field": "map_category",
+    "description": "map_category is computed from damage_cause: merged groups below, else raw damage_cause, else unknown.",
+    "merge_groups": [
+      {
+        "id": "weather_extreme",
+        "label": "Weather extreme (rain, hail, flood, frost, heat, cyclone)",
+        "event_types": [
+          "unseasonal_rain", "hailstorm", "flood", "waterlogging",
+          "frost", "heat_wave", "cyclone"
+        ]
+      },
+      {
+        "id": "drought",
+        "label": "Drought / dry spell",
+        "event_types": ["drought"]
+      },
+      {
+        "id": "pest_disease",
+        "label": "Pest or disease outbreak",
+        "event_types": [
+          "locust", "armyworm", "pest_other",
+          "disease_fungal", "disease_bacterial", "disease_viral"
+        ]
+      }
+    ],
+    "singleton_event_types": ["fire", "other"],
+    "fallback_category": "other",
+    "colors_hex": {
+      "weather_extreme": "#4575b4",
+      "drought":         "#d73027",
+      "pest_disease":    "#1a9850",
+      "fire":            "#f46d43",
+      "other":           "#737373",
+      "unknown":         "#bdbdbd"
+    }
+  },
+
+  "generalization": {
+    "purpose": "Copy this file and adapt domain, taxonomy, gkg_theme_sets, and llm_extraction for other India agrarian distress domains.",
+    "example_future_domains": [
+      {
+        "id": "heat_wave_health_india",
+        "title": "Heat wave health impacts (India)",
+        "taxonomy_focus": ["deaths", "hospitalizations", "WBGT_class", "urban_rural"]
+      },
+      {
+        "id": "water_contamination_india",
+        "title": "Water safety / contamination events (India)",
+        "taxonomy_focus": ["contaminant_type", "cases_sick", "source_type"]
+      },
+      {
+        "id": "drought_india",
+        "title": "Drought / water stress (India)",
+        "taxonomy_focus": ["severity_class", "irrigation_failure", "reservoir_level"]
+      }
+    ]
+  }
+}

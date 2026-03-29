@@ -1,4 +1,5 @@
 # Local env (use .env.example as template)
+.env
 server/.env
 frontend/.env
 frontend/.env.local
