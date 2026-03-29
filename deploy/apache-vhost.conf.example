@@ -1,0 +1,50 @@
+# Apache 2.4: serve the app at https://SERVERNAME/gdelt-wildlife/ (or http).
+# Uvicorn stays on localhost; Apache strips the /gdelt-wildlife prefix when proxying.
+#
+# Build the frontend with the same subpath:
+#   cd frontend && VITE_BASE_PATH=/gdelt-wildlife/ npm run build
+#
+# Enable modules:
+#   sudo a2enmod proxy proxy_http headers ssl
+# Install site:
+#   sudo cp deploy/apache-vhost.conf.example /etc/apache2/sites-available/gdelt-wildlife.conf
+#   sudo a2ensite gdelt-wildlife
+#   sudo apache2ctl configtest && sudo systemctl reload apache2
+
+# --- HTTP (port 80): optional; use alone or with HTTPS below ---
+<VirtualHost *:80>
+    ServerName server.example.org
+    ServerAdmin webmaster@localhost
+
+    ProxyPreserveHost On
+    RequestHeader set X-Forwarded-Proto "http"
+    RequestHeader set X-Forwarded-Port "80"
+
+    # Must match VITE_BASE_PATH (trailing slash on first segment)
+    ProxyPass /gdelt-wildlife/ http://127.0.0.1:8000/
+    ProxyPassReverse /gdelt-wildlife/ http://127.0.0.1:8000/
+
+    ErrorLog ${APACHE_LOG_DIR}/gdelt-wildlife-error.log
+    CustomLog ${APACHE_LOG_DIR}/gdelt-wildlife-access.log combined
+</VirtualHost>
+
+# --- HTTPS (port 443): adjust ServerName and certificate paths ---
+<VirtualHost *:443>
+    ServerName server.example.org
+    ServerAdmin webmaster@localhost
+
+    SSLEngine on
+    SSLCertificateFile /etc/letsencrypt/live/server.example.org/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/server.example.org/privkey.pem
+    # Include /etc/letsencrypt/options-ssl-apache.conf
+
+    ProxyPreserveHost On
+    RequestHeader set X-Forwarded-Proto "https"
+    RequestHeader set X-Forwarded-Port "443"
+
+    ProxyPass /gdelt-wildlife/ http://127.0.0.1:8000/
+    ProxyPassReverse /gdelt-wildlife/ http://127.0.0.1:8000/
+
+    ErrorLog ${APACHE_LOG_DIR}/gdelt-wildlife-ssl-error.log
+    CustomLog ${APACHE_LOG_DIR}/gdelt-wildlife-ssl-access.log combined
+</VirtualHost>

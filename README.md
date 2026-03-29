@@ -14,6 +14,7 @@ This project pulls India HWC-related articles from GDELT, enriches them with GKG
 | `scripts/` | Runnable pipeline steps |
 | `server/` | FastAPI app: layers, GeoJSON, styles, suggested edits, moderator apply (`python -m uvicorn server.main:app`) |
 | `frontend/` | Vite + React + MapLibre map UI (`npm install` / `npm run dev` or `npm run build`) |
+| `deploy/` | Example **systemd** unit and **Apache** vhost for production |
 
 Run scripts from the **repository root** (paths below assume that).
 
@@ -95,7 +96,7 @@ Builds a point GeoJSON from rows marked as HWC events with valid coordinates; op
 1. Install Python deps: `pip install -r requirements.txt`.
 2. **API env:** copy `server/.env.example` to `server/.env` and edit. Run from repo root: `python -m server.main` (reads `HOST` / `PORT` from `server/.env`) or `python -m uvicorn server.main:app --reload --host 127.0.0.1 --port 8000`.
 3. **Frontend dev env:** copy `frontend/.env.example` to `frontend/.env` so the Vite dev proxy matches the API (`VITE_API_HOST`, `VITE_API_PORT`). Then `cd frontend && npm install && npm run dev`. Restart Vite after changing `frontend/.env`.
-4. **Production-style**: `cd frontend && npm run build` then open `http://127.0.0.1:<PORT>/` (API serves `frontend/dist` when present).
+4. **Production-style**: build the SPA then serve with Uvicorn (API + static files). If you deploy under a **subpath** (e.g. `https://servername/gdelt-wildlife/`), set `VITE_BASE_PATH` when building — see **Production: Apache** below.
 
 **Where env vars are read**
 
@@ -114,6 +115,7 @@ Templates: `server/.env.example`, `frontend/.env.example`.
 | `UVICORN_PORT` | server `.env` | Used only if `PORT` is unset |
 | `SESSION_SECRET` | server `.env` | Secret for signed session cookies (production: change) |
 | `GIT_AUTO_COMMIT` | server `.env` | `1` to run `git commit` after apply |
+| `VITE_BASE_PATH` | frontend `.env` | Vite app base URL; `frontend/.env.example` defaults to `/gdelt-wildlife/` (match Apache `ProxyPass`). Use `/` for dev at site root only. |
 | `VITE_API_HOST` | frontend `.env` | Host for `/api` proxy (default `127.0.0.1`) |
 | `VITE_API_PORT` | frontend `.env` | Port for `/api` proxy (must match server `PORT`) |
 
@@ -124,6 +126,67 @@ python scripts/hash_password.py
 ```
 
 The sample file ships with user `admin` and password **`changeme`** (change before any real deployment).
+
+### Production: Apache reverse proxy + systemd (Uvicorn)
+
+Deploy the **built** SPA and run **Uvicorn bound to localhost** only; **Apache** terminates TLS and proxies HTTP(S) to Uvicorn. Example templates live under `deploy/`:
+
+| File | Purpose |
+|------|---------|
+| `deploy/gdelt-wildlife.service.example` | systemd unit for Uvicorn |
+| `deploy/apache-vhost.conf.example` | Apache `VirtualHost` with `ProxyPass` |
+
+**1. On the server (paths are examples — use your own)**
+
+- Clone or copy the repo (e.g. `/srv/gdelt-wildlife`).
+- Create a venv and install deps: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`.
+- Build the frontend with the **same URL path** Apache will use (see `deploy/apache-vhost.conf.example`). For **`https://SERVERNAME/gdelt-wildlife/`**:
+  ```bash
+  cd frontend && npm ci && VITE_BASE_PATH=/gdelt-wildlife/ npm run build
+  ```
+  For the app at the **site root** (`/`), set `VITE_BASE_PATH=/` in `frontend/.env` (or override for a one-off build) before `npm run build`.
+- Copy `server/.env.example` → `server/.env` and set at least `SESSION_SECRET` to a long random string. Optionally set `REPO_ROOT` if the app root is not the default parent of `server/`.
+- Ensure the service user can read `data/`, `outputs/`, `meta/`, and write `data/edits/`, `data/edit_log.jsonl`, and GeoJSON under `outputs/` (e.g. `chown -R www-data:www-data` or a dedicated `gdelt` user used in both systemd and file ownership).
+
+**2. systemd**
+
+```bash
+sudo cp deploy/gdelt-wildlife.service.example /etc/systemd/system/gdelt-wildlife.service
+# Edit the file: WorkingDirectory, User, paths to .venv and server/.env, and --port if not 8000
+sudo systemctl daemon-reload
+sudo systemctl enable --now gdelt-wildlife.service
+sudo systemctl status gdelt-wildlife.service
+journalctl -u gdelt-wildlife.service -f   # logs
+```
+
+The unit runs Uvicorn on **`127.0.0.1:8000`** with **`--proxy-headers`** and **`--forwarded-allow-ips=127.0.0.1`** so `X-Forwarded-*` from Apache are trusted. Do **not** use `--reload` in production.
+
+**3. Apache**
+
+Enable modules, install the vhost, and reload:
+
+```bash
+sudo a2enmod proxy proxy_http headers ssl
+sudo cp deploy/apache-vhost.conf.example /etc/apache2/sites-available/gdelt-wildlife.conf
+# Edit ServerName, SSL paths, and ProxyPass port to match Uvicorn
+sudo a2ensite gdelt-wildlife
+sudo apache2ctl configtest && sudo systemctl reload apache2
+```
+
+Obtain certificates (e.g. Certbot) and point `SSLCertificateFile` / `SSLCertificateKeyFile` at your PEM files.
+
+The vhost proxies **`/gdelt-wildlife/`** on the server to **`http://127.0.0.1:8000/`**, so the backend still sees paths like **`/api/...`** and **`/`** for the SPA (no code changes in FastAPI). Users open **`http(s)://SERVERNAME/gdelt-wildlife/`**. Use either the port **80** block (HTTP), the **443** block (HTTPS), or both; edit `ServerName` and SSL paths.
+
+**4. Port and path consistency**
+
+- **`ExecStart` `--port`**, **`ProxyPass`** target port (`127.0.0.1:8000`), and firewall rules must match.
+- **`VITE_BASE_PATH`** at build time must match the Apache path (e.g. `/gdelt-wildlife/` with a trailing slash in both Vite and `ProxyPass /gdelt-wildlife/`).
+
+**5. Operations**
+
+```bash
+sudo systemctl restart gdelt-wildlife.service   # after code or .env changes
+```
 
 ---
 

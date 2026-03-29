@@ -93,8 +93,17 @@ function escapeAttr(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
 
+/** Resolve API path against Vite `base` (e.g. `/gdelt-wildlife/api/...` when deployed under a subpath). */
+function apiUrl(path: string): string {
+  const base = import.meta.env.BASE_URL || "/";
+  const p = path.startsWith("/") ? path : `/${path}`;
+  if (base === "/" || base === "") return p;
+  const root = base.replace(/\/+$/, "");
+  return `${root}${p}`;
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(path, { ...init, credentials: "include" });
+  const r = await fetch(apiUrl(path), { ...init, credentials: "include" });
   if (!r.ok) {
     const err = await r.text();
     throw new Error(err || r.statusText);
