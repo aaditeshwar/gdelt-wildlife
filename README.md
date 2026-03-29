@@ -79,7 +79,7 @@ Fetches article text (Jina / trafilatura), runs the local Ollama model for struc
 
 Retries rows where `fetch_method` indicates failure, using Chrome/Selenium, then merges with the rest of the previous run.
 
-- **Inputs:** `--retry-failed-from` → default `data/{prefix}_final_report.csv` (must include `fetch_method`). The script merges location hints from `data/{prefix}_urls_geocoded.csv` (prefix inferred from the pilot CSV filename).
+- **Inputs:** `--retry-failed-from` → default `data/{prefix}_final_report.csv` (must include `fetch_method`). The script merges location hints from `data/{prefix}_urls_geocoded.csv` (prefix inferred from the final report CSV filename).
 - **Outputs:** default `data/{prefix}_final_report_updated.csv`.
 
 ### 5. `scripts/convert_csv_to_geojson.py`

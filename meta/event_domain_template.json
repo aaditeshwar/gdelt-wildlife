@@ -50,8 +50,8 @@
     "extraction_prompt_placeholders": ["pub_date", "url", "gdelt_locations", "article_text"]
   },
   "data_binding": {
-    "input_formats": ["pilot_results_csv"],
-    "pilot_csv": {
+    "input_formats": ["final_report_csv"],
+    "final_report_csv": {
       "filter_hwc_events": {
         "column": "CHANGE_EVENT_FLAG_COLUMN",
         "true_values": ["true", "True", "1"]

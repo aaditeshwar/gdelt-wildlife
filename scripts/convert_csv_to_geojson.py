@@ -221,12 +221,12 @@ def main() -> None:
 
     df = pd.read_csv(inp, dtype=object)
     df = ensure_event_id_column(df)
-    filter_spec = meta.get("data_binding", {}).get("pilot_csv", {}).get("filter_hwc_events", {})
+    filter_spec = meta.get("data_binding", {}).get("final_report_csv", {}).get("filter_hwc_events", {})
     col_flag = filter_spec.get("column", "is_hwc_event")
     if col_flag not in df.columns:
         sys.exit(f"ERROR: column '{col_flag}' not in CSV")
 
-    geo = meta.get("data_binding", {}).get("pilot_csv", {}).get("geometry", {})
+    geo = meta.get("data_binding", {}).get("final_report_csv", {}).get("geometry", {})
     lon_c = geo.get("longitude_column", "final_lon")
     lat_c = geo.get("latitude_column", "final_lat")
     for c in (lon_c, lat_c):
@@ -235,7 +235,7 @@ def main() -> None:
 
     props_cols = list(
         meta.get("data_binding", {})
-        .get("pilot_csv", {})
+        .get("final_report_csv", {})
         .get("properties_suggested", [])
     )
     props_cols = [c for c in props_cols if c in df.columns]

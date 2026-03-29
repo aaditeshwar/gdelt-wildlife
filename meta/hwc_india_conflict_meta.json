@@ -14,9 +14,9 @@
   },
   "data_binding": {
     "input_formats": [
-      "pilot_results_csv"
+      "final_report_csv"
     ],
-    "pilot_csv": {
+    "final_report_csv": {
       "filter_hwc_events": {
         "column": "is_hwc_event",
         "true_values": [
