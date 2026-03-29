@@ -10,6 +10,15 @@ from pathlib import Path
 
 import pandas as pd
 
+
+def load_repo_env() -> None:
+    """Load ``.env`` from the repository root (does not override existing OS env)."""
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    load_dotenv(repo_root() / ".env", override=False)
+
 # Namespace for uuid5(url) when event_id is backfilled (must match migrate_add_event_ids.py)
 EVENT_ID_NAMESPACE = uuid.UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff")
 

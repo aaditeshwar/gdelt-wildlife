@@ -52,6 +52,7 @@ python scripts/migrate_add_event_ids.py --backup   # optional .bak copies
 Queries the GDELT DOC API for keywords, deduplicates by URL.
 
 - **Inputs:** `--meta` (default `meta/hwc_india_conflict_meta.json`) supplies `gdelt_doc_fetch`: keywords, country, language, query limits, date windows.
+- **Smoke test:** `--dry-run` uses only the most recent date window, caps each query at 50 records, and stops after at most 50 deduplicated URLs (fewer API calls).
 - **Outputs:** `data/{prefix}_urls.csv`, `data/{prefix}_urls_summary.txt` (with default meta, `hwc_*`).
 
 ### 2. GKG enrichment (choose one)

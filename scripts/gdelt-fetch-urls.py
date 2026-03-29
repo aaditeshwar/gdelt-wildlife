@@ -10,6 +10,7 @@ Requirements:
 
 Usage:
     python scripts/gdelt-fetch-urls.py
+    python scripts/gdelt-fetch-urls.py --dry-run   # most recent window only, ≤50 articles
 
 Output (under data/):
     hwc_urls.csv          — deduplicated article metadata
@@ -37,6 +38,9 @@ from domain_paths import meta_path_default, output_prefix, urls_csv, urls_summar
 
 _ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_META = meta_path_default(_ROOT)
+
+# --dry-run: cap total deduplicated articles and limit API load
+DRY_RUN_MAX_ARTICLES = 50
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -102,6 +106,14 @@ def main():
         default=str(_DEFAULT_META),
         help="Domain meta JSON (must define gdelt_doc_fetch)",
     )
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            f"Smoke test: only the most recent date window, at most "
+            f"{DRY_RUN_MAX_ARTICLES} deduplicated articles, fewer API calls"
+        ),
+    )
     args = ap.parse_args()
 
     meta = load_domain_meta(args.meta)
@@ -121,6 +133,12 @@ def main():
 
     gd = GdeltDoc()
     windows = date_windows(years_back, window_months)
+    if args.dry_run:
+        windows = windows[:1]
+        print(
+            f"DRY RUN: single most recent window only; stop at "
+            f"{DRY_RUN_MAX_ARTICLES} deduplicated URLs.\n"
+        )
 
     print(banner)
     print(f"{'='*60}")
@@ -138,6 +156,9 @@ def main():
         window_dfs = []
         keywords_with_results = 0
 
+        per_query_cap = (
+            min(max_records, DRY_RUN_MAX_ARTICLES) if args.dry_run else max_records
+        )
         for kw in keywords:
             print(f"  → querying: '{kw}' ... ", end="", flush=True)
             df = query_gdelt(
@@ -147,17 +168,26 @@ def main():
                 gd,
                 country=country,
                 language=language,
-                max_records=max_records,
+                max_records=per_query_cap,
             )
             n = len(df)
             print(f"{n} articles")
             if n > 0:
                 window_dfs.append(df)
                 keywords_with_results += 1
+            if args.dry_run and window_dfs:
+                wcomb = pd.concat(window_dfs, ignore_index=True)
+                wdedup = wcomb.drop_duplicates(subset="url", keep="first")
+                if len(wdedup) >= DRY_RUN_MAX_ARTICLES:
+                    break
             time.sleep(sleep_q)
 
         if window_dfs:
             window_df = pd.concat(window_dfs, ignore_index=True)
+            if args.dry_run:
+                window_df = window_df.drop_duplicates(subset="url", keep="first").head(
+                    DRY_RUN_MAX_ARTICLES
+                )
         else:
             window_df = pd.DataFrame()
 
@@ -203,8 +233,12 @@ def main():
     # ── Summary report ────────────────────────────────────────────────────────
     stats_df = pd.DataFrame(window_stats)
 
-    summary_lines = [
-        summary_title,
+    summary_lines = [summary_title]
+    if args.dry_run:
+        summary_lines.append(
+            f"(dry run — at most {DRY_RUN_MAX_ARTICLES} deduplicated articles)"
+        )
+    summary_lines += [
         "=" * 60,
         f"Date range attempted : {windows[-1][0]} to {windows[0][1]}",
         f"Keywords searched    : {len(keywords)}",
