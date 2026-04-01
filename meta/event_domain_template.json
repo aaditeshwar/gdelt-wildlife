@@ -14,15 +14,28 @@
     "language": "English",
     "max_records": 250,
     "sleep_between_queries_seconds": 3,
-    "years_back": 5,
+    "bigquery_max_rows": 50000,
+    "_comment_bigquery_max_rows": "Optional; used only with gdelt-fetch-urls.py --source bigquery (row cap on SQL LIMIT).",
+    "fetch_start_date": "2020-01-01",
+    "fetch_end_date": "",
+    "_comment_fetch_dates": "fetch_start_date required (YYYY-MM-DD). fetch_end_date optional; omit or empty string = today.",
     "window_months": 3,
     "summary_banner": "GDELT DOC fetch",
     "summary_title": "GDELT summary"
   },
+  "bigquery_gkg_fetch": {
+    "_comment_optional": "gdelt-fetch-urls.py --source bigquery only. Omit or set mode to themes for V2Themes+geo. Use url_keywords for DocumentIdentifier LIKE + V2Locations.",
+    "mode": "themes",
+    "partition_time_start": "2021-01-01T00:00:00Z",
+    "partition_time_end": "2026-04-01T00:00:00Z",
+    "url_keyword_patterns": ["%example-slug%"],
+    "v2_locations_like": "%#IN#%",
+    "document_identifier_not_like": ["%.cn/%", "%.ru/%"]
+  },
   "gkg_theme_sets": {
-    "_comment": "Used by gdelt-enrich-urls*.py — GKG V2Themes codes",
-    "wildlife_themes": ["ENV_WILDLIFE"],
-    "conflict_themes": ["KILL", "AFFECT"],
+    "_comment": "Used by gdelt-enrich-urls*.py — GKG V2Themes codes (primary = domain, secondary = harm/incident signal)",
+    "primary_themes": ["ENV_WILDLIFE"],
+    "secondary_themes": ["KILL", "AFFECT"],
     "high_confidence_theme_score_min": 3,
     "theme_score_guide": {
       "0": "No theme match",

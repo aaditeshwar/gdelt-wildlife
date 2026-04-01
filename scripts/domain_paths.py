@@ -64,6 +64,11 @@ def urls_summary_txt(root: Path, prefix: str) -> Path:
     return data_dir(root) / f"{prefix}_urls_summary.txt"
 
 
+def urls_fetch_log_jsonl(root: Path, prefix: str) -> Path:
+    """Append-only JSONL log for ``gdelt-fetch-urls.py`` DOC API calls (per keyword × window)."""
+    return data_dir(root) / f"{prefix}_fetch_log.jsonl"
+
+
 def urls_enriched_csv(root: Path, prefix: str) -> Path:
     return data_dir(root) / f"{prefix}_urls_enriched.csv"
 

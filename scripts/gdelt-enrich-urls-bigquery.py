@@ -30,7 +30,7 @@ Usage:
 Outputs (under data/ by default):
     hwc_urls_enriched.csv        — all articles with GKG fields added
     hwc_urls_geocoded.csv        — subset with ≥1 India lat/lon resolved
-    hwc_urls_high_confidence.csv — subset matching wildlife + conflict themes
+    hwc_urls_high_confidence.csv — subset matching primary + secondary theme score
     hwc_urls_unmatched.csv       — URLs not found in GKG (paywall/404/pre-GDELT)
 """
 
@@ -123,13 +123,13 @@ def parse_themes(theme_str: str) -> set[str]:
 
 def score_themes(
     themes: set[str],
-    wildlife_themes: set[str],
-    conflict_themes: set[str],
+    primary_themes: set[str],
+    secondary_themes: set[str],
 ) -> tuple[int, list[str]]:
-    w = themes & wildlife_themes
-    c = themes & conflict_themes
-    score = (1 if w else 0) + (2 if c else 0)
-    return score, sorted(w | c)
+    primary_hits = themes & primary_themes
+    secondary_hits = themes & secondary_themes
+    score = (1 if primary_hits else 0) + (2 if secondary_hits else 0)
+    return score, sorted(primary_hits | secondary_hits)
 
 
 def parse_tone(tone_str: str) -> float | None:
@@ -227,7 +227,7 @@ def main(
 ):
 
     meta = load_domain_meta(meta_path)
-    wildlife_themes, conflict_themes, hc_min = get_gkg_theme_sets(meta)
+    primary_themes, secondary_themes, hc_min = get_gkg_theme_sets(meta)
     country_codes, subnational_types = get_gkg_geography(meta)
 
     # ── Load articles ──────────────────────────────────────────────────────
@@ -300,7 +300,7 @@ def main(
     for _, row in tqdm(gkg_df.iterrows(), total=len(gkg_df), unit="article"):
         locs   = parse_v2locations(row.get("V2Locations", ""))
         themes = parse_themes(row.get("V2Themes", ""))
-        score, matched = score_themes(themes, wildlife_themes, conflict_themes)
+        score, matched = score_themes(themes, primary_themes, secondary_themes)
         best   = best_india_location(locs, country_codes, subnational_types)
         india  = india_locations(locs, country_codes)
 
@@ -361,16 +361,16 @@ def main(
 ║  Input articles                        : {total:>5}              ║
 ║  Matched in GKG                        : {int(n_found):>5}              ║
 ║    → With ≥1 India lat/lon             : {n_geo:>5}              ║
-║    → High-confidence (wildlife+conflict): {n_hc:>5}              ║
+║    → High-confidence (primary+secondary): {n_hc:>5}              ║
 ║  Unmatched (paywall/404/pre-GDELT)     : {n_miss:>5}              ║
 ║  BigQuery billed                       : {gb_billed:>5.1f} GB           ║
 ╚══════════════════════════════════════════════════════════════╝
 
 Theme score guide:
   0 = no relevant theme tags
-  1 = wildlife theme only  (ENV_WILDLIFE, ENV_POACHING…)
-  2 = conflict/harm only   (KILL, AFFECT, WOUND…)
-  3 = BOTH → high-confidence HWC article ✓
+  1 = primary theme only   (domain topic, e.g. ENV_WILDLIFE, ENV_POACHING…)
+  2 = secondary theme only (harm/incident, e.g. KILL, AFFECT, WOUND…)
+  3 = BOTH → high-confidence article ✓
 
 Output files:
   {out_enriched:<45} ← all articles + GKG fields

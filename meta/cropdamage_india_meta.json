@@ -26,7 +26,9 @@
       "drought crop failure India",
       "untimely rain wheat damage",
       "crop inundation flood India",
-      "heat wave crop damage India",
+      "wheat crop damaged hailstorm", 
+      "paddy crop inundated", 
+      "crop compensation India district",
       "kharif rabi crop loss",
       "mandi crop damage compensation",
       "fasal bima crop loss"
@@ -35,39 +37,51 @@
     "language": "English",
     "max_records": 250,
     "sleep_between_queries_seconds": 3,
-    "years_back": 5,
+    "fetch_start_date": "2020-01-01",
+    "fetch_end_date": "2026-03-31",
     "window_months": 3,
     "summary_banner": "GDELT Crop Damage Feasibility Check — India",
     "summary_title": "GDELT Crop Damage India — Feasibility Summary"
+  },
+
+  "bigquery_gkg_fetch": {
+    "_comment": "gdelt-fetch-urls.py --source bigquery: URL slug LIKE proxies + India V2Locations + exclusions (avoids DOC API rate limits for first-pass listing)",
+    "mode": "url_keywords",
+    "partition_time_start": "2021-01-01T00:00:00Z",
+    "partition_time_end": "2026-04-01T00:00:00Z",
+    "url_keyword_patterns": [
+      "%crop-damage%",
+      "%hailstorm%",
+      "%locust%",
+      "%fasal-bima%",
+      "%kisan%crop%",
+      "%crop-loss%",
+      "%crop-destroyed%",
+      "%unseasonal-rain%",
+      "%pest-attack%"
+    ],
+    "v2_locations_like": "%#IN#%",
+    "document_identifier_not_like": ["%.cn/%", "%.ru/%", "%baidu.com%"]
   },
 
   "gkg_theme_sets": {
     "_comment_primary": "primary_themes identifies the agriculture/food domain. Sourced from: ENV_* GDELT taxonomy; WB_* World Bank taxonomy (confirmed IDs from GDELT CartoDB tutorial and WorldBank vocabulary); FOOD_SECURITY is a confirmed plain GKG theme.",
     "primary_themes": [
       "ENV_AGRICULTURE",
-      "FOOD_SECURITY",
-      "WB_199_FOOD_SECURITY",
       "WB_435_AGRICULTURE_AND_FOOD_SECURITY",
       "WB_469_CROPS",
-      "WB_471_IRRIGATION_AND_DRAINAGE",
       "WB_473_AGRICULTURAL_PRODUCTIVITY",
-      "WB_475_LIVESTOCK",
       "WB_478_PEST_MANAGEMENT",
-      "WB_2286_DROUGHT",
-      "WB_2069_AGRICULTURAL_RISK_MANAGEMENT",
-      "ENV_CLIMATECHANGE",
-      "NATURAL_DISASTER",
-      "ENV_DROUGHT"
+      "WB_2069_AGRICULTURAL_RISK_MANAGEMENT"
     ],
-    "_comment_harm": "harm_themes indicates actual damage/loss occurred — not forecasts or policy. Includes economic loss signals (ECON_*), CRISISLEX harm tags, and the plain AFFECT/KILL tags used in the HWC domain.",
-    "harm_themes": [
-      "AFFECT",
-      "CRISISLEX_CRISISLEXREC",
-      "ECON_BANKRUPTCY",
-      "ECON_COST_OF_LIVING",
-      "WB_730_NATURAL_DISASTERS",
+    "_comment_secondary": "secondary_themes indicates actual damage/loss occurred — not forecasts or policy. Includes economic loss signals (ECON_*), CRISISLEX harm tags, and the plain AFFECT/KILL tags (same role as HWC secondary set).",
+    "secondary_themes": [
       "WB_862_CROP_INSURANCE",
-      "WB_732_DISASTER_RISK_MANAGEMENT"
+      "WB_2286_DROUGHT",
+      "ENV_DROUGHT",
+      "NATURAL_DISASTER_FLOOD",
+      "NATURAL_DISASTER_DROUGHT",
+      "NATURAL_DISASTER_CYCLONE"
     ],
     "high_confidence_theme_score_min": 3,
     "theme_score_guide": {
@@ -97,7 +111,7 @@
         "WB_732_DISASTER_RISK_MANAGEMENT — WB ID 732"
       ],
       "false_positive_risks": [
-        "WB_435 is very broad — many market/policy articles will score 1; the harm_themes gate at score 3 is essential",
+        "WB_435 is very broad — many market/policy articles will score 1; the secondary_themes gate at score 3 is essential",
         "ECON_BANKRUPTCY may fire on non-farm bankruptcy news — monitor false-positive rate in pilot",
         "NATURAL_DISASTER in primary_themes will co-occur with floods/cyclones that are not primarily crop stories; the LLM gate (is_crop_damage_event) filters these",
         "fasal bima / PMFBY compensation articles score 3 (crop insurance + agriculture) but describe past events — LLM must check event_occurred vs. policy-only"

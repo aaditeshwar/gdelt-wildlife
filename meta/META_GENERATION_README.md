@@ -47,15 +47,15 @@ GROUP BY theme ORDER BY cnt DESC LIMIT 100
 
 The pipeline scores each article with `theme_score`:
 
-- **1** = only `wildlife_themes` matched → article mentions wildlife but no harm/conflict
-- **2** = only `conflict_themes` matched → article mentions harm/conflict but not wildlife-specific
+- **1** = only `primary_themes` matched → article matches the domain topic but not the harm/incident signal
+- **2** = only `secondary_themes` matched → article matches harm/incident tags but not the domain-specific topic
 - **3** = both sets matched → **high confidence** this is an HWC article
 
-This two-set design is intentional. An article about a tiger reserve management policy would score 1 (wildlife only). An article about a road accident would score 2 (conflict only). Only articles mentioning *both* wildlife and harm together score 3, which is what you want to prioritise for full-text extraction.
+This two-set design is intentional. An article about a tiger reserve management policy would score 1 (primary only). An article about a road accident would score 2 (secondary only). Only articles mentioning *both* domain and harm signals together score 3, which is what you want to prioritise for full-text extraction.
 
 ### How the HWC themes were specifically chosen
 
-**`wildlife_themes`** — selected by scanning the `ENV_*` and `WB_*` namespaces for anything related to animals, forests, and ecosystems:
+**`primary_themes`** (domain topic) — selected by scanning the `ENV_*` and `WB_*` namespaces for anything related to animals, forests, and ecosystems:
 
 | Theme | Why included |
 |---|---|
@@ -67,7 +67,7 @@ This two-set design is intentional. An article about a tiger reserve management 
 | `WB_678_FORESTS` | World Bank forests tag, co-occurs with range conflicts |
 | `NATURAL_DISASTER` | Included because elephants entering villages is sometimes tagged as a disaster event |
 
-**`conflict_themes`** — selected from the plain/CRISISLEX tags that indicate physical harm to people or animals:
+**`secondary_themes`** — selected from the plain/CRISISLEX tags that indicate physical harm to people or animals:
 
 | Theme | Why included |
 |---|---|
@@ -80,7 +80,7 @@ This two-set design is intentional. An article about a tiger reserve management 
 | `CRISISLEX_CRISISLEXREC` | General crisis recommendation tag |
 | `SECURITY_SERVICES` | Sometimes applied to forest guard incidents |
 
-The key insight: **`wildlife_themes` identifies the topic domain; `conflict_themes` identifies that something harmful actually happened**. Articles scoring high on both are genuine incidents, not policy or conservation news.
+The key insight: **`primary_themes` identifies the topic domain; `secondary_themes` identifies that something harmful actually happened**. Articles scoring high on both are genuine incidents, not policy or conservation news.
 
 ---
 
@@ -107,8 +107,8 @@ Please generate a complete meta JSON file for the following event domain:
 **Title:** [HUMAN READABLE, e.g. "Crop damage from unseasonal rainfall (India)"]
 **Description:** [1-2 sentences describing what events you want to map]
 **Geography:** India (country code IN), English-language articles
-**Years back:** 5
-**Window months:** 3
+**Fetch date range:** `fetch_start_date` (YYYY-MM-DD) and optional `fetch_end_date` (omit for today)
+**Window months:** 3 (chunk size for DOC API windows)
 
 The JSON must follow exactly the same schema as hwc_india_conflict_meta.json
 with these top-level keys:
@@ -117,19 +117,21 @@ with these top-level keys:
 
 Specific requirements:
 
-1. **gdelt_doc_fetch.keywords**: Generate 8-12 specific search phrases
+1. **gdelt_doc_fetch**: Set **`fetch_start_date`** / optional **`fetch_end_date`**
+   (YYYY-MM-DD; omit end for “through today”) and **`window_months`** (chunk size).
+   **gdelt_doc_fetch.keywords**: Generate 8-12 specific search phrases
    that would appear in Indian news articles about this type of event.
    Include both common English terms and India-specific terminology
    (district names, Indian government agency names, crop names, etc.)
    where relevant. Avoid overly generic terms that would match unrelated articles.
 
 2. **gkg_theme_sets**: This is the most important section.
-   - **primary_themes** (equivalent to wildlife_themes in HWC):
+   - **primary_themes** (domain / topic area — e.g. wildlife & forests in HWC, agriculture in crop damage):
      Choose 6-10 GKG theme codes from ENV_*, WB_*, or domain-specific
      themes that identify this topic area. Reference the GDELT theme taxonomy:
      http://data.gdeltproject.org/documentation/GDELT-Global_Knowledge_Graph_CategoryList.xlsx
      Explain briefly why each theme is included.
-   - **harm_themes** (equivalent to conflict_themes in HWC):
+   - **secondary_themes** (harm / incident signal — e.g. conflict/harm tags in HWC):
      Choose 4-8 GKG theme codes indicating actual harm occurred
      (deaths, injury, economic loss, displacement, health impact).
      Use CRISISLEX_*, plain themes (KILL, WOUND, AFFECT, ECON_*), and

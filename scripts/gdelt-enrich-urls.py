@@ -22,7 +22,7 @@ We:
   3. Download those GKG files (small ~2-5MB each, zipped)
   4. Match rows by DocumentIdentifier (= article URL)
   5. Parse V2Locations into structured lat/lon records
-  6. Filter & score articles by relevant wildlife/conflict themes
+  6. Filter & score articles by primary/secondary GKG theme sets
   7. Output enriched CSV + a "high confidence" subset
 
 Requirements:
@@ -35,7 +35,7 @@ Usage:
 Output (under data/ by default):
     hwc_urls_enriched.csv        — all articles with GKG fields added
     hwc_urls_geocoded.csv        — subset with ≥1 India location extracted
-    hwc_urls_high_confidence.csv — subset matching wildlife/conflict themes
+    hwc_urls_high_confidence.csv — subset matching primary + secondary theme score
 """
 
 import argparse
@@ -177,17 +177,17 @@ def parse_themes(theme_string: str) -> set[str]:
 
 def score_article(
     themes: set[str],
-    wildlife_themes: set[str],
-    conflict_themes: set[str],
+    primary_themes: set[str],
+    secondary_themes: set[str],
 ) -> tuple[int, list[str]]:
     """
     Return (score, matched_themes).
-    score: 0=no match, 1=wildlife only, 2=conflict only, 3=both
+    score: 0=no match, 1=primary only, 2=secondary only, 3=both
     """
-    wildlife_hits = themes & wildlife_themes
-    conflict_hits = themes & conflict_themes
-    score = (1 if wildlife_hits else 0) + (2 if conflict_hits else 0)
-    return score, sorted(wildlife_hits | conflict_hits)
+    primary_hits = themes & primary_themes
+    secondary_hits = themes & secondary_themes
+    score = (1 if primary_hits else 0) + (2 if secondary_hits else 0)
+    return score, sorted(primary_hits | secondary_hits)
 
 
 def parse_tone(tone_string: str) -> float | None:
@@ -286,7 +286,7 @@ def main(
 ):
 
     meta = load_domain_meta(meta_path)
-    wildlife_themes, conflict_themes, hc_min = get_gkg_theme_sets(meta)
+    primary_themes, secondary_themes, hc_min = get_gkg_theme_sets(meta)
     country_codes, subnational_types = get_gkg_geography(meta)
 
     CACHE_DIR.mkdir(exist_ok=True)
@@ -372,7 +372,7 @@ def main(
 
             # Parse themes
             themes = parse_themes(_gkg_cell_str(row.get("V2Themes")))
-            score, matched_themes = score_article(themes, wildlife_themes, conflict_themes)
+            score, matched_themes = score_article(themes, primary_themes, secondary_themes)
 
             # Parse tone
             tone = parse_tone(_gkg_cell_str(row.get("V2Tone")))
@@ -429,15 +429,15 @@ def main(
 ║  Matched in GKG files             : {n_found:>6}             ║
 ║  → With ≥1 India location (lat/lon): {n_geo:>6}             ║
 ║  → No India location found        : {n_no_loc:>6}             ║
-║  High-confidence (wildlife+conflict): {n_hc:>6}            ║
+║  High-confidence (primary+secondary): {n_hc:>6}            ║
 ║  GKG files downloaded/scanned     : {files_processed:>6}             ║
 ╚══════════════════════════════════════════════════════════╝
 
 Theme score guide:
-  0 = No wildlife or conflict theme match
-  1 = Wildlife theme only (ENV_WILDLIFE, ENV_POACHING, etc.)
-  2 = Conflict/harm theme only (KILL, AFFECT, WOUND, etc.)
-  3 = Both wildlife + conflict themes → HIGH CONFIDENCE HWC article
+  0 = No primary or secondary theme match
+  1 = Primary theme only (domain topic, e.g. ENV_WILDLIFE, ENV_POACHING)
+  2 = Secondary theme only (harm/incident, e.g. KILL, AFFECT, WOUND)
+  3 = Both primary + secondary themes → HIGH CONFIDENCE HWC article
 
 Next steps:
   1. Review hwc_urls_high_confidence.csv — these are your best candidates

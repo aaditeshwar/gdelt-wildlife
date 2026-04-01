@@ -32,10 +32,12 @@ API keys / URLs (optional):
 Two-run workflow
 ----------------
   1) First run (no --retry-failed-from): reads --input (default data/hwc_urls_geocoded.csv)
-     — URL, title, GDELT fields; no fetch_method column. Writes data/hwc_final_report.csv.
+     — URL, title, GDELT fields; no fetch_method column. Writes data/hwc_final_report.csv
+     incrementally (one row appended after each article is processed).
   2) Second run: pass --retry-failed-from (default file: data/hwc_final_report.csv if you use
      the flag alone). Loads the previous run CSV (has fetch_method), retries only failed
-     URLs with Selenium, leaves successful rows unchanged, writes merged CSV.
+     URLs with Selenium, leaves successful rows unchanged, rewrites the merged CSV after each
+     retry so progress is not lost on crash.
 
 Usage:
     python scripts/gdelt-get-full-text.py --sample 50
@@ -46,6 +48,7 @@ Usage:
 """
 
 import argparse
+import csv
 import json
 import logging
 import os
@@ -158,6 +161,54 @@ def _pilot_scalar_for_csv(v):
     if isinstance(v, (int, float)):
         return str(v)
     return str(v)
+
+
+# Column order for first-run incremental CSV (matches process_fetched_article + fetch-fail rows)
+FINAL_REPORT_COLUMNS = (
+    "event_id",
+    "url",
+    "title",
+    "pub_date",
+    "gdelt_lat",
+    "gdelt_lon",
+    "fetch_method",
+    "article_chars",
+    "is_hwc_event",
+    "species",
+    "event_type",
+    "humans_killed",
+    "humans_injured",
+    "animals_killed",
+    "animals_injured",
+    "event_date",
+    "primary_location",
+    "location_type",
+    "location_notes",
+    "gdelt_location_match",
+    "confidence",
+    "extraction_notes",
+    "_error",
+    "geocoded_address",
+    "final_lat",
+    "final_lon",
+    "geocode_source",
+)
+
+
+def init_incremental_final_report_csv(path: Path, columns: tuple[str, ...]) -> None:
+    """Create/overwrites output with header only."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerow(columns)
+
+
+def append_incremental_final_report_row(
+    path: Path, row: dict, columns: tuple[str, ...]
+) -> None:
+    """Append one data row (values aligned to ``columns``)."""
+    vals = [_pilot_scalar_for_csv(row.get(c)) for c in columns]
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerow(vals)
 
 
 # LLM system/user prompts: loaded from meta JSON (llm_extraction), see --meta.
@@ -727,97 +778,110 @@ def retry_failed_pilot_results(
         to_process = to_process[:max_retries]
         print(f"  → Processing first {len(to_process)} failed rows (--max-selenium-retries)")
 
+    if not to_process:
+        Path(output_csv).parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(output_csv, index=False)
+        print(f"\n✓ Saved → {output_csv} (nothing to retry after --max-selenium-retries)")
+        return
+
+    Path(output_csv).parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(output_csv, index=False)
+    print(f"  → Initial snapshot ({len(df)} rows) → {output_csv}")
+
     log.debug("Starting Chrome driver for %s failed-row retries", len(to_process))
     driver = make_chrome_driver(proxy_server=proxy_server)
     n_ok = n_still_bad = 0
     try:
         for i, idx in enumerate(tqdm(to_process, unit="article", disable=verbose), start=1):
-            row = df.loc[idx]
-            url = str(row.get("url", "") or "").strip()
-            title = row.get("title", "")
-            pub_date = str(row.get("pub_date", "") or "")
-            gdelt_lat = row.get("gdelt_lat", "")
-            gdelt_lon = row.get("gdelt_lon", "")
-            gdelt_loc = (
-                row.get("gdelt_location_match")
-                or row.get("gdelt_all_india_locations_hint")
-                or row.get("all_india_locations")
-                or ""
-            )
-            gdelt_loc = str(gdelt_loc) if gdelt_loc and str(gdelt_loc) != "nan" else ""
-
-            log.debug("=" * 72)
-            log.debug(
-                "[%s/%s] Selenium retry df_index=%s url=%s",
-                i,
-                len(to_process),
-                idx,
-                url,
-            )
-            log.debug(
-                "  row: title=%r pub_date=%r gdelt_loc_hint_len=%s",
-                (str(title)[:100] + "…") if len(str(title)) > 100 else title,
-                pub_date,
-                len(gdelt_loc),
-            )
-
-            if not url:
-                log.debug("  skip: empty url")
-                df.at[idx, "fetch_method"] = "failed_selenium"
-                df.at[idx, "_error"] = "empty url"
-                n_still_bad += 1
-                time.sleep(SLEEP_JINA)
-                continue
-
-            html = fetch_html_selenium(driver, url)
-            if not html:
-                log.debug("  Selenium returned no html → failed_selenium")
-                df.at[idx, "fetch_method"] = "failed_selenium"
-                df.at[idx, "_error"] = "selenium could not load page"
-                n_still_bad += 1
-                time.sleep(SLEEP_JINA)
-                continue
-
-            article_text = extract_text_from_html(html, url)
-            if not article_text:
-                log.debug(
-                    "  trafilatura returned no usable text (see extract_text_from_html logs above)",
+            try:
+                row = df.loc[idx]
+                url = str(row.get("url", "") or "").strip()
+                title = row.get("title", "")
+                pub_date = str(row.get("pub_date", "") or "")
+                gdelt_lat = row.get("gdelt_lat", "")
+                gdelt_lon = row.get("gdelt_lon", "")
+                gdelt_loc = (
+                    row.get("gdelt_location_match")
+                    or row.get("gdelt_all_india_locations_hint")
+                    or row.get("all_india_locations")
+                    or ""
                 )
-                df.at[idx, "fetch_method"] = "failed_selenium"
-                df.at[idx, "_error"] = "selenium/trafilatura could not extract article text"
-                n_still_bad += 1
-                time.sleep(SLEEP_JINA)
-                continue
+                gdelt_loc = str(gdelt_loc) if gdelt_loc and str(gdelt_loc) != "nan" else ""
 
-            log.debug("  pipeline: process_fetched_article (chars=%s)", len(article_text))
-            eid = str(row.get("event_id", "") or "").strip()
-            out = process_fetched_article(
-                url=url,
-                title=title,
-                pub_date=pub_date,
-                gdelt_lat=gdelt_lat,
-                gdelt_lon=gdelt_lon,
-                gdelt_loc=str(gdelt_loc),
-                article_text=article_text,
-                fetch_method="selenium",
-                model=model,
-                no_geocode=no_geocode,
-                event_id=eid,
-                system_prompt=system_prompt,
-                extraction_prompt=extraction_prompt,
-            )
-            for k, v in out.items():
-                if k not in df.columns:
-                    df[k] = ""
-                df.at[idx, k] = _pilot_scalar_for_csv(v)
-            n_ok += 1
-            log.debug(
-                "  Selenium retry OK: fetch_method=%s is_hwc_event=%r geocode_source=%r",
-                out.get("fetch_method"),
-                out.get("is_hwc_event"),
-                out.get("geocode_source"),
-            )
-            time.sleep(SLEEP_JINA)
+                log.debug("=" * 72)
+                log.debug(
+                    "[%s/%s] Selenium retry df_index=%s url=%s",
+                    i,
+                    len(to_process),
+                    idx,
+                    url,
+                )
+                log.debug(
+                    "  row: title=%r pub_date=%r gdelt_loc_hint_len=%s",
+                    (str(title)[:100] + "…") if len(str(title)) > 100 else title,
+                    pub_date,
+                    len(gdelt_loc),
+                )
+
+                if not url:
+                    log.debug("  skip: empty url")
+                    df.at[idx, "fetch_method"] = "failed_selenium"
+                    df.at[idx, "_error"] = "empty url"
+                    n_still_bad += 1
+                    time.sleep(SLEEP_JINA)
+                    continue
+
+                html = fetch_html_selenium(driver, url)
+                if not html:
+                    log.debug("  Selenium returned no html → failed_selenium")
+                    df.at[idx, "fetch_method"] = "failed_selenium"
+                    df.at[idx, "_error"] = "selenium could not load page"
+                    n_still_bad += 1
+                    time.sleep(SLEEP_JINA)
+                    continue
+
+                article_text = extract_text_from_html(html, url)
+                if not article_text:
+                    log.debug(
+                        "  trafilatura returned no usable text (see extract_text_from_html logs above)",
+                    )
+                    df.at[idx, "fetch_method"] = "failed_selenium"
+                    df.at[idx, "_error"] = "selenium/trafilatura could not extract article text"
+                    n_still_bad += 1
+                    time.sleep(SLEEP_JINA)
+                    continue
+
+                log.debug("  pipeline: process_fetched_article (chars=%s)", len(article_text))
+                eid = str(row.get("event_id", "") or "").strip()
+                out = process_fetched_article(
+                    url=url,
+                    title=title,
+                    pub_date=pub_date,
+                    gdelt_lat=gdelt_lat,
+                    gdelt_lon=gdelt_lon,
+                    gdelt_loc=str(gdelt_loc),
+                    article_text=article_text,
+                    fetch_method="selenium",
+                    model=model,
+                    no_geocode=no_geocode,
+                    event_id=eid,
+                    system_prompt=system_prompt,
+                    extraction_prompt=extraction_prompt,
+                )
+                for k, v in out.items():
+                    if k not in df.columns:
+                        df[k] = ""
+                    df.at[idx, k] = _pilot_scalar_for_csv(v)
+                n_ok += 1
+                log.debug(
+                    "  Selenium retry OK: fetch_method=%s is_hwc_event=%r geocode_source=%r",
+                    out.get("fetch_method"),
+                    out.get("is_hwc_event"),
+                    out.get("geocode_source"),
+                )
+                time.sleep(SLEEP_JINA)
+            finally:
+                df.to_csv(output_csv, index=False)
     finally:
         try:
             log.debug("Selenium: quitting webdriver")
@@ -825,8 +889,6 @@ def retry_failed_pilot_results(
         except Exception as e:
             log.debug("Selenium: driver.quit() raised %s", e)
 
-    Path(output_csv).parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(output_csv, index=False)
     print(f"\n✓ Updated results saved → {output_csv}")
     print(f"  Selenium succeeded: {n_ok}  Still failed: {n_still_bad}")
 
@@ -890,14 +952,31 @@ def main(
             sample = df.sample(n=min(sample_size, len(df)), random_state=seed)
             print(f"  → Sampled {len(sample)} articles (random)")
 
-    results = []
     stats = {
         "fetch_jina": 0, "fetch_trafilatura": 0, "fetch_failed": 0,
         "is_hwc": 0, "not_hwc": 0, "extract_error": 0,
         "geocoded_claude": 0, "geocoded_gdelt_fallback": 0, "no_geocode": 0,
     }
 
-    print(f"\nProcessing {len(sample)} articles...\n")
+    if len(sample) == 0:
+        Path(output_csv).parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(columns=list(FINAL_REPORT_COLUMNS)).to_csv(
+            output_csv, index=False, encoding="utf-8"
+        )
+        print(f"\n✓ No articles to process — empty CSV with headers → {output_csv}")
+        rp = Path(output_report)
+        rp.parent.mkdir(parents=True, exist_ok=True)
+        rp.write_text(
+            "HWC Extraction Pilot — Quality Report\n"
+            "======================================\n"
+            "Sample size: 0\n"
+        )
+        print(f"✓ Report saved → {output_report}")
+        return
+
+    init_incremental_final_report_csv(Path(output_csv), FINAL_REPORT_COLUMNS)
+
+    print(f"\nProcessing {len(sample)} articles (writing each row to {output_csv})...\n")
     use_tqdm = not verbose
     iterator = tqdm(
         sample.iterrows(),
@@ -955,7 +1034,9 @@ def main(
                 "_error": "article fetch failed",
             })
             log.debug("  [fetch] FAILED → using gdelt_fallback_no_text if coords exist")
-            results.append(result_row)
+            append_incremental_final_report_row(
+                Path(output_csv), result_row, FINAL_REPORT_COLUMNS
+            )
             continue
 
         # ── 2–3. Ollama extraction + geocode (shared with Selenium retry path)
@@ -977,13 +1058,13 @@ def main(
         )
         accumulate_stats_from_result(stats, result_row)
 
-        results.append(result_row)
+        append_incremental_final_report_row(
+            Path(output_csv), result_row, FINAL_REPORT_COLUMNS
+        )
 
-    # ── Save results ───────────────────────────────────────────────────────
-    out_df = pd.DataFrame(results)
-    Path(output_csv).parent.mkdir(parents=True, exist_ok=True)
-    out_df.to_csv(output_csv, index=False)
-    print(f"\n✓ Results saved → {output_csv}")
+    # ── Load saved CSV for quality report & spot-check ───────────────────────
+    out_df = pd.read_csv(output_csv, dtype=object)
+    print(f"\n✓ Finished writing {len(out_df)} rows → {output_csv}")
 
     # ── Quality report ─────────────────────────────────────────────────────
     hwc_df    = out_df[out_df["is_hwc_event"] == True]

@@ -197,13 +197,14 @@
     "language": "English",
     "max_records": 250,
     "sleep_between_queries_seconds": 3,
-    "years_back": 5,
+    "fetch_start_date": "2020-01-01",
+    "fetch_end_date": "2026-03-31",
     "window_months": 3,
     "summary_banner": "GDELT HWC Feasibility Check — India",
     "summary_title": "GDELT HWC India — Feasibility Summary"
   },
   "gkg_theme_sets": {
-    "wildlife_themes": [
+    "primary_themes": [
       "ENV_DEFORESTATION",
       "ENV_FORESTS",
       "ENV_POACHING",
@@ -214,7 +215,7 @@
       "WB_2069_WILDLIFE_MANAGEMENT",
       "WB_678_FORESTS"
     ],
-    "conflict_themes": [
+    "secondary_themes": [
       "AFFECT",
       "CRISISLEX_CRISISLEXREC",
       "CRISISLEX_T03_DEAD",
@@ -226,10 +227,10 @@
     ],
     "high_confidence_theme_score_min": 3,
     "theme_score_guide": {
-      "0": "No wildlife or conflict theme match",
-      "1": "Wildlife theme only",
-      "2": "Conflict/harm theme only",
-      "3": "Both wildlife + conflict themes (high confidence)"
+      "0": "No primary or secondary theme match",
+      "1": "Primary theme only (domain topic)",
+      "2": "Secondary theme only (harm / incident signal)",
+      "3": "Both primary + secondary themes (high confidence)"
     }
   },
   "gkg_geography": {
