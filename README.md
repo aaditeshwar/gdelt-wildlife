@@ -9,8 +9,6 @@ This project pulls India HWC-related articles from GDELT, enriches them with GKG
 | `data/` | CSV inputs and intermediate outputs (default paths for scripts) |
 | `outputs/` | GeoJSON, QGIS QML styles, and the narrative text report from full-text extraction |
 | `meta/` | Domain metadata: GDELT keywords, GKG theme sets, LLM prompts, GeoJSON/QML (`hwc_india_conflict_meta.json`, `event_domain_template.json`). For new domains, see **[META_GENERATION_README.md](meta/META_GENERATION_README.md)**. |
-| `scripts/domain_meta.py` | Shared loader for meta JSON (used by fetch, enrich, full-text scripts) |
-| `scripts/domain_paths.py` | `output_prefix(meta)` and standard `data/` / `outputs/` filenames; deterministic `event_id` backfill |
 | `scripts/` | Runnable pipeline steps |
 | `server/` | FastAPI app: layers, GeoJSON, styles, suggested edits, moderator apply (`python -m uvicorn server.main:app`) |
 | `frontend/` | Vite + React + MapLibre map UI (`npm install` / `npm run dev` or `npm run build`) |
@@ -49,11 +47,14 @@ python scripts/migrate_add_event_ids.py --backup   # optional .bak copies
 
 ### 1. `scripts/gdelt-fetch-urls.py`
 
-Queries the GDELT DOC API for keywords, deduplicates by URL.
+Deduplicates by URL and writes `data/{prefix}_urls.csv` + summary.
 
-- **Inputs:** `--meta` (default `meta/hwc_india_conflict_meta.json`) supplies `gdelt_doc_fetch`: keywords, country, language, query limits, date windows.
-- **Smoke test:** `--dry-run` uses only the most recent date window, caps each query at 50 records, and stops after at most 50 deduplicated URLs (fewer API calls).
-- **Outputs:** `data/{prefix}_urls.csv`, `data/{prefix}_urls_summary.txt` (with default meta, `hwc_*`).
+- **Recommended:** **`--source doc`** (default, omit the flag). Uses the GDELT DOC 2.0 API with **`gdelt_doc_fetch.keywords`** (plus country, language, **`fetch_start_date`** / optional **`fetch_end_date`** (defaults to today), **`window_months`** chunking, `sleep_between_queries_seconds`, etc.). Then run **step 2** (`gdelt-enrich-urls-bigquery.py` or local enrich) on that CSV — enrichment **adds GKG fields** to your URL list; it does **not** replace keyword-based discovery.
+- **Optional (`--source bigquery`):** Queries public ``gdelt-bq.gdeltv2.gkg_partitioned``. **Default** in meta: **`gkg_theme_sets`** + **`gkg_geography`** (V2Themes + V2Locations LIKE). **`gdelt_doc_fetch.keywords` are not passed as SQL** — they are ignored unless you switch strategy. **Optional** domain meta section **`bigquery_gkg_fetch`** with **`"mode": "url_keywords"`** runs **`DocumentIdentifier LIKE`** patterns (URL slug proxy), a hard **`V2Locations`** filter (e.g. `%#IN#%`), optional **`document_identifier_not_like`** exclusions, and **`partition_time_start` / `partition_time_end`** on `_PARTITIONTIME` — useful when the DOC API is rate-limited. Omit `bigquery_gkg_fetch` or set **`mode`** to **`themes`** for theme-based discovery. Requires **`--project`** / `GOOGLE_CLOUD_PROJECT`; BigQuery bills for bytes scanned. Optional: `gdelt_doc_fetch.bigquery_max_rows` (default 50_000). The script prints a short notice when this mode is selected.
+- **Inputs:** `--meta` supplies `gdelt_doc_fetch` (keywords used only in **doc** mode) and `gkg_theme_sets` + `gkg_geography` (for BigQuery fetch and for enrich scripts).
+- **Smoke test:** `--dry-run` — DOC: one window, ≤50 articles; BigQuery: `LIMIT` capped the same way.
+- **DOC API logging & recovery:** Each keyword×date-window call appends one JSON line to `data/{prefix}_fetch_log.jsonl` (override with `--fetch-log`). Rate limits and transient HTTP errors are retried with exponential backoff (`--max-retries`, `--backoff-base`, `--backoff-max`). After a run with failures, **`--retry-failed`** re-executes only pairs whose *last* log line is still `failed`, then appends new URLs not already in `data/{prefix}_urls.csv` (incremental; new rows get new `event_id`s).
+- **Outputs:** `data/{prefix}_urls.csv`, `data/{prefix}_urls_summary.txt` (with default meta, `hwc_*`), and in DOC mode `data/{prefix}_fetch_log.jsonl`.
 
 ### 2. GKG enrichment (choose one)
 
@@ -211,7 +212,7 @@ All scripts accept explicit `--input`, `--output`, and related flags. Defaults p
 
 Copy `meta/event_domain_template.json` or adapt `meta/hwc_india_conflict_meta.json`. Scripts read:
 
-- **`gdelt_doc_fetch`** — DOC API keywords, country/language, `max_records`, sleep, years/windows, summary titles.
-- **`gkg_theme_sets`** — `wildlife_themes` and `conflict_themes` (GKG V2Themes codes), `high_confidence_theme_score_min`.
+- **`gdelt_doc_fetch`** — DOC API keywords, country/language, `max_records`, sleep, **`fetch_start_date`** / optional **`fetch_end_date`**, `window_months`, summary titles.
+- **`gkg_theme_sets`** — `primary_themes` and `secondary_themes` (GKG V2Themes codes; domain vs harm/incident signal), `high_confidence_theme_score_min`.
 - **`gkg_geography`** — `location_country_codes`, `subnational_loc_types` for GKG V2Locations filtering.
 - **`llm_extraction`** — use **`system_prompt_lines`** and **`extraction_prompt_lines`** (arrays of strings) so long prompts do not require heavy JSON escaping. The extraction template must include `{pub_date}`, `{url}`, `{gdelt_locations}`, and `{article_text}`. Literal `{` / `}` in the embedded JSON example must appear as doubled `{{` / `}}` in the joined string (same rule as Python `str.format`).

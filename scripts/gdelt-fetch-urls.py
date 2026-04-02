@@ -16,7 +16,9 @@ intent when the DOC API is rate-limited. It still does **not** use
 ``bigquery_gkg_fetch.url_keyword_patterns``.
 
 Default: DOC API across keywords and date windows,
-deduplicates by URL, writes CSV + summary.
+deduplicates by URL, appends each new URL row to ``data/{prefix}_urls.csv`` as it is
+found (BigQuery: row-by-row after the query returns). Summary + sorted CSV are written
+at the end.
 
 Requirements:
     pip install gdeltdoc pandas
@@ -78,6 +80,13 @@ _DEFAULT_META = meta_path_default(_ROOT)
 # --dry-run: cap total deduplicated articles and limit API load / BQ rows
 DRY_RUN_MAX_ARTICLES = 50
 
+# Columns written to {prefix}_urls.csv (DOC API path; matches write_csv_and_summary)
+_URLS_CSV_COLS_DOC = [
+    "event_id", "url", "title", "seendate", "domain", "language",
+    "sourcecountry", "query_keyword", "query_start", "query_end",
+    "url_mobile", "socialimage",
+]
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -120,20 +129,38 @@ def load_queries_to_retry_from_log(path: Path) -> list[tuple[str, str, str]]:
     return [k for k, r in last.items() if r.get("status") == "failed"]
 
 
-def merge_existing_urls_csv(existing_path: Path, new_df: pd.DataFrame) -> pd.DataFrame:
-    """Append new rows; dedupe by ``url`` (first wins — existing rows keep ``event_id``)."""
-    if new_df.empty:
-        if existing_path.is_file():
-            return pd.read_csv(existing_path)
-        return pd.DataFrame()
-    new_part = new_df.copy()
-    if "event_id" not in new_part.columns:
-        new_part.insert(0, "event_id", [str(uuid.uuid4()) for _ in range(len(new_part))])
-    if not existing_path.is_file():
-        return new_part
-    existing = pd.read_csv(existing_path)
-    combined = pd.concat([existing, new_part], ignore_index=True)
-    return combined.drop_duplicates(subset="url", keep="first")
+def append_doc_urls_incremental(
+    output_csv: Path,
+    df: pd.DataFrame,
+    seen_urls: set[str],
+    file_started: list[bool],
+) -> tuple[int, int]:
+    """
+    Append rows from a DOC API ``article_search`` frame, deduping by ``url`` against
+    ``seen_urls`` and within ``df``. Returns ``(n_new_rows_written, n_rows_in_input_df)``.
+    """
+    n_raw = len(df)
+    if df.empty or "url" not in df.columns:
+        return 0, n_raw
+    sub = df.drop_duplicates(subset="url", keep="first").copy()
+    urls = sub["url"].astype(str).str.strip()
+    mask = urls.ne("") & ~urls.isin(seen_urls)
+    sub = sub.loc[mask]
+    if sub.empty:
+        return 0, n_raw
+    for u in sub["url"].astype(str).str.strip():
+        seen_urls.add(u)
+    sub.insert(0, "event_id", [str(uuid.uuid4()) for _ in range(len(sub))])
+    for c in _URLS_CSV_COLS_DOC:
+        if c not in sub.columns:
+            sub[c] = ""
+    sub = sub[_URLS_CSV_COLS_DOC]
+    mode = "a" if file_started[0] else "w"
+    header = not file_started[0]
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    sub.to_csv(output_csv, mode=mode, header=header, index=False, encoding="utf-8")
+    file_started[0] = True
+    return len(sub), n_raw
 
 
 def _retryable_doc_error(exc: BaseException) -> bool:
@@ -401,6 +428,7 @@ def fetch_urls_bigquery(
     project: str,
     dry_run: bool,
     max_rows_cfg: int,
+    output_csv: Path,
 ) -> tuple[
     pd.DataFrame,
     int,
@@ -496,6 +524,8 @@ def fetch_urls_bigquery(
             windows_for_summary,
         )
 
+    print(f"  → Writing URLs incrementally → {output_csv.name}")
+
     total_raw = len(df)
     if "DocumentIdentifier" in df.columns:
         df = df.rename(columns={"DocumentIdentifier": "url"})
@@ -504,16 +534,23 @@ def fetch_urls_bigquery(
     language = str(cfg.get("language", "English"))
     q_start, q_end = windows_for_summary[-1][0], windows_for_summary[0][1]
 
-    rows = []
     has_gkg_cols = "V2Themes" in df.columns
+    file_started = [False]
+    seen_urls: set[str] = set()
+    bq_cols = list(_URLS_CSV_COLS_DOC)
+    if has_gkg_cols:
+        bq_cols.extend(["gkg_v2_themes", "gkg_v2_locations", "gkg_v2_tone"])
+
     for _, r in df.iterrows():
         url = str(r.get("url") or "").strip()
-        if not url:
+        if not url or url in seen_urls:
             continue
+        seen_urls.add(url)
         dom = str(r.get("SourceCommonName") or "").strip()
         if not dom:
             dom = urlparse(url).netloc or ""
         row = {
+            "event_id": str(uuid.uuid4()),
             "url": url,
             "title": "",
             "seendate": _normalize_seendate(r.get("gkg_date")),
@@ -534,9 +571,14 @@ def fetch_urls_bigquery(
             row["gkg_v2_themes"] = str(r.get("V2Themes") or "")
             row["gkg_v2_locations"] = str(r.get("V2Locations") or "")
             row["gkg_v2_tone"] = str(r.get("V2Tone") or "")
-        rows.append(row)
+        one = pd.DataFrame([row]).reindex(columns=bq_cols)
+        mode = "a" if file_started[0] else "w"
+        header = not file_started[0]
+        output_csv.parent.mkdir(parents=True, exist_ok=True)
+        one.to_csv(output_csv, mode=mode, header=header, index=False, encoding="utf-8")
+        file_started[0] = True
 
-    out = pd.DataFrame(rows)
+    out = pd.read_csv(output_csv, dtype=object) if file_started[0] else pd.DataFrame()
     total_dedup = len(out)
     window_stats = [{
         "window_start": q_start,
@@ -745,7 +787,7 @@ def main():
         action="store_true",
         help=(
             "DOC API only: re-run only (keyword × window) pairs whose last log line "
-            "is failed; merge new URLs into existing data/{prefix}_urls.csv"
+            "is failed; append new URLs not already in data/{prefix}_urls.csv"
         ),
     )
     ap.add_argument(
@@ -846,6 +888,7 @@ def main():
             project=project,
             dry_run=args.dry_run,
             max_rows_cfg=bq_max_rows,
+            output_csv=output_csv,
         )
         write_csv_and_summary(
             combined_dedup=combined_dedup,
@@ -919,8 +962,19 @@ def main():
     print(f"NOTE: Only the most recent ~3 months are guaranteed by GDELT DOC API.")
     print(f"      Older windows will be attempted but may return sparse results.\n")
 
-    all_frames = []
-    window_stats = []
+    seen_urls: set[str] = set()
+    file_started = [False]
+    total_raw = 0
+    if args.retry_failed and output_csv.is_file() and output_csv.stat().st_size > 0:
+        try:
+            ex = pd.read_csv(output_csv, dtype=object)
+            if "url" in ex.columns:
+                seen_urls.update(ex["url"].dropna().astype(str).str.strip())
+            file_started[0] = True
+        except Exception:
+            pass
+
+    window_stats: list[dict] = []
 
     if args.retry_failed:
         assert tasks is not None
@@ -947,9 +1001,16 @@ def main():
                 backoff_max=backoff_max,
             )
             n = len(df)
+            total_raw += n
+            n_new, _ = append_doc_urls_incremental(
+                output_csv, df, seen_urls, file_started
+            )
             print(f"{n} articles", flush=True)
-            if n > 0:
-                all_frames.append(df)
+            if n_new:
+                print(
+                    f"    (+{n_new} new URLs → {output_csv.name})",
+                    flush=True,
+                )
             time.sleep(sleep_q)
         window_stats = []
     else:
@@ -977,15 +1038,19 @@ def main():
                     backoff_max=backoff_max,
                 )
                 n = len(df)
-                print(f"{n} articles")
+                total_raw += n
+                n_new, _ = append_doc_urls_incremental(
+                    output_csv, df, seen_urls, file_started
+                )
+                print(f"{n} articles", end="")
+                if n_new:
+                    print(f" (+{n_new} new URLs → {output_csv.name})", end="")
+                print()
                 if n > 0:
                     window_dfs.append(df)
                     keywords_with_results += 1
-                if args.dry_run and window_dfs:
-                    wcomb = pd.concat(window_dfs, ignore_index=True)
-                    wdedup = wcomb.drop_duplicates(subset="url", keep="first")
-                    if len(wdedup) >= DRY_RUN_MAX_ARTICLES:
-                        break
+                if args.dry_run and len(seen_urls) >= DRY_RUN_MAX_ARTICLES:
+                    break
                 time.sleep(sleep_q)
 
             if window_dfs:
@@ -1004,24 +1069,13 @@ def main():
                 "raw_articles": raw_count,
                 "keywords_with_results": keywords_with_results,
             })
-            if not window_df.empty:
-                all_frames.append(window_df)
 
-    if all_frames:
-        combined = pd.concat(all_frames, ignore_index=True)
-        total_raw = len(combined)
-        combined_dedup = combined.drop_duplicates(subset="url", keep="first")
-        total_dedup = len(combined_dedup)
-        combined_dedup = combined_dedup.copy()
-    else:
-        total_raw = 0
-        total_dedup = 0
-        combined_dedup = pd.DataFrame()
-
-    if args.retry_failed:
-        combined_dedup = merge_existing_urls_csv(output_csv, combined_dedup)
-        total_dedup = len(combined_dedup)
-        # total_raw remains count from this run's API responses only (see summary)
+    combined_dedup = (
+        pd.read_csv(output_csv, dtype=object)
+        if file_started[0]
+        else pd.DataFrame()
+    )
+    total_dedup = len(combined_dedup)
 
     stitle = summary_title
     if args.retry_failed:

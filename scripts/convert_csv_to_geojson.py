@@ -1,7 +1,7 @@
 """
 CSV → GeoJSON (HWC points) + optional QGIS QML style
 ===================================================
-Reads data/hwc_final_report_updated.csv (or data/hwc_final_report.csv), keeps rows where
+Reads one or more extraction CSVs (concatenated in order), keeps rows where
 is_hwc_event is true, valid final_lon/final_lat, and writes a Point GeoJSON.
 
 Category field ``map_category`` follows meta/hwc_india_conflict_meta.json
@@ -10,6 +10,7 @@ Category field ``map_category`` follows meta/hwc_india_conflict_meta.json
 Usage:
     python scripts/convert_csv_to_geojson.py
     python scripts/convert_csv_to_geojson.py --input data/hwc_final_report_updated.csv --output outputs/hwc_points.geojson
+    python scripts/convert_csv_to_geojson.py --input run1/a.csv run2/b.csv --output outputs/hwc_points.geojson
     python scripts/convert_csv_to_geojson.py --meta meta/hwc_india_conflict_meta.json --write-qml outputs/hwc_india_points.qml
 """
 
@@ -25,10 +26,7 @@ import pandas as pd
 
 from domain_paths import (  # noqa: E402
     ensure_event_id_column,
-    final_report_updated_csv,
-    meta_path_default,
     output_prefix,
-    points_geojson,
     points_qml,
 )
 
@@ -183,8 +181,13 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Convert extraction CSV to GeoJSON points + optional QML")
     p.add_argument(
         "--input",
-        default=str(root / "data" / "hwc_final_report_updated.csv"),
-        help="Input CSV (default: data/hwc_final_report_updated.csv)",
+        nargs="*",
+        default=None,
+        metavar="CSV",
+        help=(
+            "One or more input CSVs, merged in order (default: data/hwc_final_report_updated.csv). "
+            "Prefer this over shell-concatenating files, which can break on embedded newlines."
+        ),
     )
     p.add_argument(
         "--meta",
@@ -210,16 +213,24 @@ def main() -> None:
     if not meta_path.is_file():
         sys.exit(f"ERROR: meta file not found: {meta_path}")
 
+    pfx = output_prefix(meta_path)
+
+    if args.input is None or len(args.input) == 0:
+        csv_paths = [root / "data" / "hwc_final_report_updated.csv"]
+    else:
+        csv_paths = [Path(p).expanduser() for p in args.input]
+
+    for inp in csv_paths:
+        if not inp.is_file():
+            sys.exit(f"ERROR: input CSV not found: {inp}")
+
+    frames = [pd.read_csv(p, dtype=object) for p in csv_paths]
+    df = pd.concat(frames, ignore_index=True)
+
     with open(meta_path, encoding="utf-8") as f:
         meta = json.load(f)
 
     field_cat = meta.get("map_style", {}).get("category_field", "map_category")
-
-    inp = Path(args.input)
-    if not inp.is_file():
-        sys.exit(f"ERROR: input CSV not found: {inp}")
-
-    df = pd.read_csv(inp, dtype=object)
     df = ensure_event_id_column(df)
     filter_spec = meta.get("data_binding", {}).get("final_report_csv", {}).get("filter_hwc_events", {})
     col_flag = filter_spec.get("column", "is_hwc_event")
@@ -285,6 +296,9 @@ def main() -> None:
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(fc, f, ensure_ascii=False, indent=2)
 
+    n_in = len(df)
+    src = ", ".join(str(p) for p in csv_paths)
+    print(f"Loaded {n_in} rows from {len(csv_paths)} file(s): {src}")
     print(f"Wrote {len(features)} points -> {out_path}")
 
     qml_arg = args.write_qml

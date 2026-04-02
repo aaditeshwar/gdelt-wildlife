@@ -14,7 +14,17 @@
   },
 
   "gdelt_doc_fetch": {
+    "_comment_keywords": "DOC API matches article fields (not URL slugs like bigquery_gkg_fetch.url_keyword_patterns). Short phrases improve recall vs slug-only BigQuery hits; country=IN already constrains geography.",
     "keywords": [
+      "hailstorm",
+      "unseasonal rain",
+      "crop damage",
+      "crop loss",
+      "locust",
+      "pest attack crops",
+      "drought crop",
+      "PMFBY",
+      "crop insurance India",
       "crop damage India",
       "crop loss India",
       "unseasonal rain crop damage",
@@ -26,8 +36,8 @@
       "drought crop failure India",
       "untimely rain wheat damage",
       "crop inundation flood India",
-      "wheat crop damaged hailstorm", 
-      "paddy crop inundated", 
+      "wheat crop damaged hailstorm",
+      "paddy crop inundated",
       "crop compensation India district",
       "kharif rabi crop loss",
       "mandi crop damage compensation",
@@ -65,6 +75,7 @@
   },
 
   "gkg_theme_sets": {
+    "_comment_scope": "Used by gdelt-enrich-urls*.py for GKG theme scoring on URLs. gdelt-fetch-urls.py --source doc does NOT use these. For --source bigquery, only theme-based SQL uses them (not bigquery_gkg_fetch.mode url_keywords).",
     "_comment_primary": "primary_themes identifies the agriculture/food domain. Sourced from: ENV_* GDELT taxonomy; WB_* World Bank taxonomy (confirmed IDs from GDELT CartoDB tutorial and WorldBank vocabulary); FOOD_SECURITY is a confirmed plain GKG theme.",
     "primary_themes": [
       "ENV_AGRICULTURE",
