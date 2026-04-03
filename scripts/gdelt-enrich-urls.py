@@ -82,7 +82,7 @@ GKG_COLUMNS = [
     "GKGRECORDID", "DATE", "SourceCollectionIdentifier", "SourceCommonName",
     "DocumentIdentifier", "Counts", "V2Counts", "Themes", "V2Themes",
     "Locations", "V2Locations", "Persons", "V2Persons", "Organizations",
-    "V2Organizations", "V2Tone", "Dates", "GCAM", "SharingImage",
+    "V2Organizations", "V2Tone", "Dates", "GCAM",
     "RelatedImages", "SocialImageEmbeds", "SocialVideoEmbeds",
     "Quotations", "AllNames", "Amounts", "TranslationInfo", "Extras"
 ]
