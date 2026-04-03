@@ -10,10 +10,8 @@ discovery.
 **``--source bigquery``** queries ``gdelt-bq.gdeltv2.gkg_partitioned``. Default:
 ``gkg_theme_sets`` + ``gkg_geography`` (V2Themes + V2Locations LIKE). Optional
 ``bigquery_gkg_fetch.mode: "url_keywords"`` uses **URL slug** ``DocumentIdentifier LIKE``
-patterns (plus India location and optional domain exclusions), closer to keyword
-intent when the DOC API is rate-limited. It still does **not** use
-``gdelt_doc_fetch.keywords`` as SQL fragments — configure patterns under
-``bigquery_gkg_fetch.url_keyword_patterns``.
+OR ``Extras`` text (phrases from ``url_keyword_patterns`` + ``gdelt_doc_fetch.keywords``),
+plus India location and optional domain exclusions. Theme mode does not use ``Extras``.
 
 Default: DOC API across keywords and date windows,
 deduplicates by URL, appends each new URL row to ``data/{prefix}_urls.csv`` as it is
@@ -84,7 +82,7 @@ DRY_RUN_MAX_ARTICLES = 50
 _URLS_CSV_COLS_DOC = [
     "event_id", "url", "title", "seendate", "domain", "language",
     "sourcecountry", "query_keyword", "query_start", "query_end",
-    "url_mobile", "socialimage",
+    "url_mobile",
 ]
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -321,6 +319,43 @@ def _sql_escape(s: str) -> str:
     return str(s).replace("\\", "\\\\").replace("'", "''")
 
 
+def _extras_like_phrases_from_meta(meta: dict[str, Any]) -> list[str]:
+    """
+    Build deduplicated phrases for g.Extras LIKE '%…%' (URL mode only).
+    Sources: bigquery_gkg_fetch.url_keyword_patterns (strip %) and gdelt_doc_fetch.keywords.
+    """
+    bq = meta.get("bigquery_gkg_fetch")
+    if not isinstance(bq, dict):
+        bq = {}
+    max_terms = int(bq.get("extras_match_max_terms", 48))
+    raw: list[str] = []
+    pats = bq.get("url_keyword_patterns")
+    if isinstance(pats, list):
+        for p in pats:
+            s = str(p).strip().strip("%").strip()
+            if s:
+                raw.append(s)
+    gdf = meta.get("gdelt_doc_fetch")
+    if isinstance(gdf, dict):
+        kws = gdf.get("keywords")
+        if isinstance(kws, list):
+            for k in kws:
+                s = str(k).strip()
+                if s:
+                    raw.append(s)
+    seen: set[str] = set()
+    out: list[str] = []
+    for s in raw:
+        key = s.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+        if len(out) >= max_terms:
+            break
+    return out
+
+
 def _normalize_seendate(val) -> str:
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return ""
@@ -364,7 +399,10 @@ SELECT
   g.DocumentIdentifier,
   g.DATE AS gkg_date,
   g.SourceCommonName,
-  g.SharingImage
+  g.V2Themes,
+  g.V2Locations,
+  g.V2Tone,
+  g.V2Persons
 FROM `gdelt-bq.gdeltv2.gkg_partitioned` AS g
 WHERE DATE(g._PARTITIONTIME, 'UTC') BETWEEN DATE('{_sql_escape(d_start)}')
                                        AND DATE('{_sql_escape(d_end)}')
@@ -383,17 +421,27 @@ def build_gkg_partitioned_fetch_sql_url_keywords(
     v2_locations_like: str,
     document_identifier_not_like: list[str],
     row_limit: int,
+    extras_like_phrases: list[str] | None = None,
 ) -> str:
     """
-    BigQuery discovery via URL slug proxies: OR of ``DocumentIdentifier LIKE``,
-    hard location on ``V2Locations``, optional ``NOT LIKE`` noise filters.
-    Uses ``_PARTITIONTIME`` half-open range ``[start, end)`` like ad-hoc GDELT SQL.
+    BigQuery discovery: (URL slug OR Extras text) AND India location AND partition.
+    ``extras_like_phrases`` — OR of ``g.Extras LIKE '%phrase%'`` for recall when slugs
+    miss (phrases from meta url_keyword_patterns + gdelt_doc_fetch.keywords).
     """
     if not url_patterns:
         raise ValueError("url_keyword_patterns must be non-empty")
     url_ors = " OR ".join(
         f"g.DocumentIdentifier LIKE '{_sql_escape(p)}'" for p in url_patterns
     )
+    extras = extras_like_phrases or []
+    extras = [str(p).strip() for p in extras if str(p).strip()]
+    if extras:
+        extras_ors = " OR ".join(
+            f"g.Extras LIKE '%{_sql_escape(p)}%'" for p in extras
+        )
+        doc_or_url = f"(({url_ors}) OR ({extras_ors}))"
+    else:
+        doc_or_url = f"({url_ors})"
     not_clauses = ""
     for p in document_identifier_not_like:
         not_clauses += f"\n  AND g.DocumentIdentifier NOT LIKE '{_sql_escape(p)}'"
@@ -405,15 +453,15 @@ SELECT DISTINCT
   g.DocumentIdentifier AS url,
   g.DATE AS gkg_date,
   g.SourceCommonName,
-  g.SharingImage,
   g.V2Themes,
   g.V2Locations,
-  g.V2Tone
+  g.V2Tone,
+  g.V2Persons
 FROM `gdelt-bq.gdeltv2.gkg_partitioned` AS g
 WHERE
   g._PARTITIONTIME >= TIMESTAMP('{pts}')
   AND g._PARTITIONTIME < TIMESTAMP('{pte}')
-  AND ({url_ors})
+  AND {doc_or_url}
   AND g.V2Locations LIKE '{loc}'{not_clauses}
 ORDER BY g.DATE DESC
 LIMIT {int(row_limit)}
@@ -455,6 +503,7 @@ def fetch_urls_bigquery(
         pts = bq_spec["partition_time_start"]
         pte = bq_spec["partition_time_end"]
         pats = bq_spec["url_keyword_patterns"]
+        extras_phrases = _extras_like_phrases_from_meta(meta)
         sql = build_gkg_partitioned_fetch_sql_url_keywords(
             partition_time_start=pts,
             partition_time_end=pte,
@@ -462,6 +511,7 @@ def fetch_urls_bigquery(
             v2_locations_like=bq_spec["v2_locations_like"],
             document_identifier_not_like=bq_spec["document_identifier_not_like"],
             row_limit=row_limit,
+            extras_like_phrases=extras_phrases,
         )
         range_start = pts[:10] if len(pts) >= 10 else pts
         range_end = pte[:10] if len(pte) >= 10 else pte
@@ -471,6 +521,7 @@ def fetch_urls_bigquery(
         print(f"  Project : {project}")
         print(f"  Partition: TIMESTAMP('{pts}') ≤ _PARTITIONTIME < TIMESTAMP('{pte}')")
         print(f"  URL LIKE patterns: {match_count} (bigquery_gkg_fetch.url_keyword_patterns)")
+        print(f"  Extras LIKE phrases: {len(extras_phrases)} (url patterns + gdelt_doc_fetch.keywords)")
         print(f"  V2Locations LIKE: {bq_spec['v2_locations_like']!r}")
         print(f"  NOT LIKE exclusions: {len(bq_spec['document_identifier_not_like'])}")
         print(f"  LIMIT   : {row_limit}")
@@ -539,7 +590,9 @@ def fetch_urls_bigquery(
     seen_urls: set[str] = set()
     bq_cols = list(_URLS_CSV_COLS_DOC)
     if has_gkg_cols:
-        bq_cols.extend(["gkg_v2_themes", "gkg_v2_locations", "gkg_v2_tone"])
+        bq_cols.extend(
+            ["gkg_v2_themes", "gkg_v2_locations", "gkg_v2_tone", "gkg_v2_persons"]
+        )
 
     for _, r in df.iterrows():
         url = str(r.get("url") or "").strip()
@@ -565,12 +618,12 @@ def fetch_urls_bigquery(
             "query_start": q_start,
             "query_end": q_end,
             "url_mobile": "",
-            "socialimage": str(r.get("SharingImage") or ""),
         }
         if has_gkg_cols:
             row["gkg_v2_themes"] = str(r.get("V2Themes") or "")
             row["gkg_v2_locations"] = str(r.get("V2Locations") or "")
             row["gkg_v2_tone"] = str(r.get("V2Tone") or "")
+            row["gkg_v2_persons"] = str(r.get("V2Persons") or "")
         one = pd.DataFrame([row]).reindex(columns=bq_cols)
         mode = "a" if file_started[0] else "w"
         header = not file_started[0]
@@ -639,10 +692,10 @@ def write_csv_and_summary(
         cols = [
             "event_id", "url", "title", "seendate", "domain", "language",
             "sourcecountry", "query_keyword", "query_start", "query_end",
-            "url_mobile", "socialimage",
+            "url_mobile",
         ]
         cols = [c for c in cols if c in out_df.columns]
-        for _gkg in ("gkg_v2_themes", "gkg_v2_locations", "gkg_v2_tone"):
+        for _gkg in ("gkg_v2_themes", "gkg_v2_locations", "gkg_v2_tone", "gkg_v2_persons"):
             if _gkg in out_df.columns and _gkg not in cols:
                 cols.append(_gkg)
         output_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -714,21 +767,22 @@ def write_csv_and_summary(
             summary_lines += [
                 "",
                 "⚠  IMPORTANT NOTES:",
-                "  1. Discovery used bigquery_gkg_fetch (URL slug LIKE + V2Locations + exclusions).",
-                "     It does not send gdelt_doc_fetch.keywords to BigQuery — patterns live in meta.",
+                "  1. Discovery: URL slug LIKE OR Extras LIKE (phrases from url_keyword_patterns +",
+                "     gdelt_doc_fetch.keywords), plus V2Locations + exclusions (see meta).",
                 f"  2. BigQuery bytes billed (this run): ~{gb_billed or 0:.2f} GB.",
                 "  3. Titles are empty — downstream full-text fetch supplies text.",
-                "  4. gkg_v2_* columns are GKG previews; enrichment still scores themes per URL.",
+                "  4. gkg_v2_* columns include GKG fields; gdelt-enrich-urls-bigquery.py can skip",
+                "     the join when those columns are present (unless --force-bigquery).",
             ]
         else:
             summary_lines += [
                 "",
                 "⚠  IMPORTANT NOTES:",
-                "  1. This run did NOT use gdelt_doc_fetch.keywords — only GKG themes + geography.",
-                "     For keyword-driven discovery, re-run with --source doc (default), then enrich.",
+                "  1. Theme mode: GKG themes + geography only (no Extras / no DOC keywords in SQL).",
+                "     For keyword-driven discovery, use --source doc or bigquery_gkg_fetch.mode url_keywords.",
                 f"  2. BigQuery bytes billed (this run): ~{gb_billed or 0:.2f} GB.",
                 "  3. Titles are empty — downstream full-text fetch supplies text.",
-                "  4. Next: prefer doc fetch + gdelt-enrich-urls-bigquery.py for the usual pipeline.",
+                "  4. gkg_v2_* on CSV when present; gdelt-enrich-urls-bigquery.py may skip BQ join.",
             ]
 
     summary_text = "\n".join(summary_lines)

@@ -107,8 +107,8 @@ Please generate a complete meta JSON file for the following event domain:
 **Title:** [HUMAN READABLE, e.g. "Crop damage from unseasonal rainfall (India)"]
 **Description:** [1-2 sentences describing what events you want to map]
 **Geography:** India (country code IN), English-language articles
-**Fetch date range:** `fetch_start_date` (YYYY-MM-DD) and optional `fetch_end_date` (omit for today)
-**Window months:** 3 (chunk size for DOC API windows)
+**Fetch date range:** `gdelt_doc_fetch.fetch_start_date` (YYYY-MM-DD, **required**) and optional `fetch_end_date` (omit or empty string for **today** in the runner’s local date — see `scripts/domain_meta.py::get_gdelt_doc_fetch_date_range`). Do **not** use legacy `years_back`; the fetch script requires explicit dates.
+**Window months:** 3 (chunk size for DOC API windows; `gdelt_doc_fetch.window_months`)
 
 The JSON must follow exactly the same schema as hwc_india_conflict_meta.json
 with these top-level keys:
@@ -117,8 +117,9 @@ with these top-level keys:
 
 Specific requirements:
 
-1. **gdelt_doc_fetch**: Set **`fetch_start_date`** / optional **`fetch_end_date`**
-   (YYYY-MM-DD; omit end for “through today”) and **`window_months`** (chunk size).
+1. **gdelt_doc_fetch**: Set **`fetch_start_date`** (required) and optional **`fetch_end_date`**
+   (YYYY-MM-DD; omit or `""` for “through today”) and **`window_months`** (chunk size).
+   Reference: `meta/hwc_india_conflict_meta.json` and `meta/event_domain_template.json`.
    **gdelt_doc_fetch.keywords**: Generate 8-12 specific search phrases
    that would appear in Indian news articles about this type of event.
    Include both common English terms and India-specific terminology
@@ -165,7 +166,9 @@ Specific requirements:
    filter_hwc_events.column to match the primary boolean field name
    your LLM prompt will output (e.g. "is_crop_damage_event").
 
-8. At the end, add a **design_notes** section (not consumed by scripts)
+8. **Optional `bigquery_gkg_fetch`**: If you use `gdelt-fetch-urls.py --source bigquery`, add this object (see `meta/cropdamage_india_meta.json`). Set `partition_time_start` / `partition_time_end` for the GKG scan window; they may differ slightly from `gdelt_doc_fetch` dates (e.g. later start to reduce BigQuery cost)—document any intentional gap in `_comment`.
+
+9. At the end, add a **design_notes** section (not consumed by scripts)
    explaining:
    - Why you chose these specific GKG themes over alternatives
    - Any known false-positive risks (articles that will score high
@@ -187,7 +190,7 @@ Here are the domains you mentioned, with the key disambiguation challenges to wa
 
 | Domain | Suggested `domain.id` | Key false-positive risk | Most useful primary themes |
 |---|---|---|---|
-| Crop damage (rainfall/hail) | `crop_damage_india` | Policy/insurance articles, weather forecasts | `ENV_AGRICULTURE`, `WB_*_CROP*`, `NATURAL_DISASTER` |
+| Crop damage (rainfall/hail) | `cropdamage_india` (`meta/cropdamage_india_meta.json`) | Policy/insurance articles, weather forecasts | `ENV_AGRICULTURE`, `WB_*` crops / risk, `NATURAL_DISASTER_*` in secondary |
 | Drought / water stress | `drought_india` | Future outlook articles, budget allocation | `ENV_DROUGHT`, `WB_*_DROUGHT`, `WB_*_IRRIGATION` |
 | Pest / locust attack | `pest_attack_india` | Research articles, preventive spraying news | `ENV_PESTICIDES`, `WB_*_PEST*`, `ENV_AGRICULTURE` |
 | Heat wave health impacts | `heat_wave_india` | Weather forecasts, historical retrospectives | `ENV_CLIMATECHANGE`, `CRISISLEX_T03_DEAD`, `HEALTH_*` |
@@ -229,20 +232,22 @@ Run this first, scan the top 100 themes, and paste the output into your prompt t
 
 1. **Validate JSON syntax:** `python -m json.tool meta/your_new_meta.json`
 
-2. **Check the filter column name** in `data_binding.filter_hwc_events.column` matches exactly what the LLM extraction prompt outputs as the top-level boolean field.
+2. **Confirm `gdelt_doc_fetch.fetch_start_date` is set** (and `fetch_end_date` if you need a fixed end). The fetch pipeline rejects meta files that only specify deprecated `years_back`.
 
-3. **Check placeholder names** in `llm_extraction.extraction_prompt_lines` match `extraction_prompt_placeholders` — all four of `pub_date`, `url`, `gdelt_locations`, `article_text` must be present.
+3. **Check the filter column name** in `data_binding.filter_hwc_events.column` matches exactly what the LLM extraction prompt outputs as the top-level boolean field.
 
-4. **Test a dry run:**
+4. **Check placeholder names** in `llm_extraction.extraction_prompt_lines` match `extraction_prompt_placeholders` — all four of `pub_date`, `url`, `gdelt_locations`, `article_text` must be present.
+
+5. **Test a dry run:**
    ```bash
    python scripts/gdelt-fetch-urls.py --meta meta/your_new_meta.json --dry-run
    ```
 
-5. **Run on a small sample first** before committing to the full pipeline:
+6. **Run on a small sample first** before committing to the full pipeline:
    ```bash
    python scripts/gdelt-fetch-urls.py --meta meta/your_new_meta.json
    python scripts/gdelt-enrich-urls-bigquery.py --meta meta/your_new_meta.json --project YOUR_PROJECT
    python scripts/gdelt-get-full-text.py --meta meta/your_new_meta.json --sample 30
    ```
 
-6. **Review `design_notes`** in the generated JSON — if Claude flagged false-positive risks, adjust `gdelt_doc_fetch.keywords` to be more specific before scaling up.
+7. **Review `design_notes`** in the generated JSON — if Claude flagged false-positive risks, adjust `gdelt_doc_fetch.keywords` to be more specific before scaling up.

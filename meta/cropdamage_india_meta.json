@@ -55,10 +55,10 @@
   },
 
   "bigquery_gkg_fetch": {
-    "_comment": "gdelt-fetch-urls.py --source bigquery: URL slug LIKE proxies + India V2Locations + exclusions (avoids DOC API rate limits for first-pass listing)",
+    "_comment": "gdelt-fetch-urls.py --source bigquery: URL slug LIKE proxies + India V2Locations + exclusions (avoids DOC API rate limits for first-pass listing). partition_time_* is the GKG table scan window; it may start later than gdelt_doc_fetch.fetch_start_date (here 2021 vs 2020) to limit query cost—align both when you need identical calendar coverage.",
     "mode": "url_keywords",
-    "partition_time_start": "2021-01-01T00:00:00Z",
-    "partition_time_end": "2026-04-01T00:00:00Z",
+    "partition_time_start": "2020-01-01T00:00:00Z",
+    "partition_time_end": "2026-03-31T00:00:00Z",
     "url_keyword_patterns": [
       "%crop-damage%",
       "%hailstorm%",
@@ -124,7 +124,7 @@
       "false_positive_risks": [
         "WB_435 is very broad — many market/policy articles will score 1; the secondary_themes gate at score 3 is essential",
         "ECON_BANKRUPTCY may fire on non-farm bankruptcy news — monitor false-positive rate in pilot",
-        "NATURAL_DISASTER in primary_themes will co-occur with floods/cyclones that are not primarily crop stories; the LLM gate (is_crop_damage_event) filters these",
+        "NATURAL_DISASTER_FLOOD / NATURAL_DISASTER_DROUGHT / NATURAL_DISASTER_CYCLONE in secondary_themes will co-occur with non-crop disaster stories; agriculture primary + harm secondary at score 3 still needs crop-specific article text—the LLM gate (is_crop_damage_event) filters remaining false positives",
         "fasal bima / PMFBY compensation articles score 3 (crop insurance + agriculture) but describe past events — LLM must check event_occurred vs. policy-only"
       ],
       "bigquery_validation_query": "WITH nested AS (SELECT SPLIT(RTRIM(REGEXP_REPLACE(V2Themes, r',\\d+;', ';'), ';'), ';') themes FROM `gdelt-bq.gdeltv2.gkg_partitioned` WHERE _PARTITIONTIME >= TIMESTAMP('2021-01-01') AND (V2Themes LIKE '%AGRICULTURE%' OR V2Themes LIKE '%CROP%') AND V2Locations LIKE '%India%') SELECT theme, COUNT(1) cnt FROM nested, UNNEST(themes) AS theme GROUP BY theme ORDER BY cnt DESC LIMIT 100"

@@ -5,6 +5,14 @@ Takes your data/hwc_urls.csv, uploads the URLs + dates to a
 BigQuery temp table, joins against gdelt-bq.gdeltv2.gkg_partitioned
 (partitioned by day → cheap), and returns GKG fields for each article.
 
+If the CSV already contains ``gkg_v2_themes``, ``gkg_v2_locations``, and
+``gkg_v2_tone`` (from ``gdelt-fetch-urls.py --source bigquery``), the script
+parses those in-process and **skips** the BigQuery join unless you pass
+``--force-bigquery``.
+
+Optional ``--dedupe-mode path``, ``jaccard``, or ``path,jaccard`` deduplicates
+rows before the join (see README).
+
 Why gkg_partitioned?
   The full GKG table is 3.6TB. The partitioned version lets BigQuery
   scan only the days your articles appeared on — typically just a few
@@ -35,12 +43,13 @@ Outputs (under data/ by default):
 """
 
 import argparse
-import json
 import os
 import re
 import sys
+from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import pandas as pd
 from google.cloud import bigquery
@@ -139,6 +148,345 @@ def parse_tone(tone_str: str) -> float | None:
         return None
 
 
+# Trailing digit blob on last path segment (e.g. ANI YYYYMMDDHHMMSS on slug).
+# Reverted if stripping would remove the whole segment or leave only digits.
+_TRAILING_SLUG_DIGIT_BLOB = re.compile(r"\d{8,}$")
+
+_DEFAULT_URL_STOPWORDS = frozenset({
+    "www", "com", "html", "htm", "php", "aspx", "jsp", "cms", "news",
+    "article", "articles", "story", "stories", "id", "page", "index",
+})
+
+
+def story_dedupe_key(url: str) -> str:
+    """
+    Normalize URL path for cross-domain wire syndication dedupe (same path, many hosts).
+    Ignores scheme and host. Strips a long trailing digit run from the last segment only.
+    """
+    if not url or (isinstance(url, float) and pd.isna(url)):
+        return ""
+    u = str(url).strip()
+    if not u:
+        return ""
+    try:
+        parsed = urlparse(u)
+    except Exception:
+        return u.lower()
+    path = parsed.path or ""
+    path = unquote(path)
+    segments = [p for p in path.split("/") if p]
+    if not segments:
+        return u.lower()
+    last = segments[-1]
+    stripped = _TRAILING_SLUG_DIGIT_BLOB.sub("", last)
+    if stripped and not stripped.isdigit() and stripped != last:
+        segments = segments[:-1] + [stripped]
+    path_norm = "/" + "/".join(segments).lower().rstrip("/")
+    if path_norm in ("/", ""):
+        return u.lower()
+    return path_norm
+
+
+def dedupe_articles_path(articles: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Keep one row per story_dedupe_key; earliest seendate wins, then url for tie-break.
+    Returns (kept, dropped) with dropped empty when nothing removed.
+    """
+    n_in = len(articles)
+    df = articles.copy()
+    df["_story_dedupe_key"] = df["url"].map(story_dedupe_key)
+    empty_key = df["_story_dedupe_key"].eq("") | df["_story_dedupe_key"].isna()
+    df.loc[empty_key, "_story_dedupe_key"] = (
+        df.loc[empty_key, "url"].astype(str).str.strip().str.lower()
+    )
+    still_empty = df["_story_dedupe_key"].eq("")
+    if still_empty.any():
+        if "event_id" in df.columns:
+            df.loc[still_empty, "_story_dedupe_key"] = (
+                "__event__" + df.loc[still_empty, "event_id"].astype(str)
+            )
+        else:
+            df.loc[still_empty, "_story_dedupe_key"] = (
+                "__row__" + df.loc[still_empty].index.astype(str)
+            )
+    sort_date = pd.to_datetime(
+        df["seendate"], format="%Y%m%d%H%M%S", utc=True, errors="coerce"
+    )
+    df = df.assign(_sort_date=sort_date)
+    df = df.sort_values(
+        by=["_sort_date", "url"],
+        na_position="last",
+        kind="mergesort",
+    )
+    dup = df.duplicated(subset="_story_dedupe_key", keep="first")
+    n_drop = int(dup.sum())
+    kept = df.loc[~dup].copy()
+    dropped = pd.DataFrame()
+    if n_drop:
+        dropped = df.loc[dup].copy()
+        first_urls = (
+            kept.loc[:, ["_story_dedupe_key", "url"]]
+            .rename(columns={"url": "kept_url"})
+        )
+        dropped = dropped.merge(first_urls, on="_story_dedupe_key", how="left")
+        dropped["dedupe_stage"] = "path"
+        dropped = dropped.drop(columns=["_sort_date"], errors="ignore")
+    kept = kept.drop(columns=["_story_dedupe_key", "_sort_date"], errors="ignore")
+    print(f"  → Path dedupe: removed {n_drop} row(s) ({n_in} → {len(kept)})")
+    return kept, dropped
+
+
+def url_path_token_set(
+    url: str,
+    min_token_len: int,
+    extra_stopwords: set[str],
+) -> frozenset[str]:
+    """Alphanumeric tokens from URL path for Jaccard similarity."""
+    if not url or (isinstance(url, float) and pd.isna(url)):
+        return frozenset()
+    try:
+        parsed = urlparse(str(url).strip())
+    except Exception:
+        return frozenset()
+    path = unquote(parsed.path or "").lower()
+    parts = re.findall(r"[a-z0-9]+", path)
+    sw = _DEFAULT_URL_STOPWORDS | extra_stopwords
+    out: list[str] = []
+    for p in parts:
+        if len(p) < min_token_len:
+            continue
+        if p.isdigit():
+            continue
+        p2 = _TRAILING_SLUG_DIGIT_BLOB.sub("", p)
+        if len(p2) >= min_token_len and not p2.isdigit() and p2 != p:
+            p = p2
+        if len(p) < min_token_len or p in sw:
+            continue
+        out.append(p)
+    return frozenset(out)
+
+
+def _token_jaccard(a: frozenset[str], b: frozenset[str]) -> float:
+    if not a and not b:
+        return 1.0
+    u = len(a | b)
+    if u == 0:
+        return 0.0
+    return len(a & b) / u
+
+
+class _UnionFind:
+    def __init__(self, n: int) -> None:
+        self._p = list(range(n))
+
+    def find(self, x: int) -> int:
+        if self._p[x] != x:
+            self._p[x] = self.find(self._p[x])
+        return self._p[x]
+
+    def union(self, a: int, b: int) -> None:
+        ra, rb = self.find(a), self.find(b)
+        if ra != rb:
+            self._p[rb] = ra
+
+
+def dedupe_articles_jaccard(
+    articles: pd.DataFrame,
+    *,
+    jaccard_min: float,
+    jaccard_min_near_date: float,
+    max_days_apart: int,
+    date_window_days: int,
+    min_token_len: int,
+    min_intersection: int,
+    stopwords: set[str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Cluster rows by URL token Jaccard + date window; keep earliest seendate per cluster.
+    """
+    n_in = len(articles)
+    if n_in <= 1:
+        return articles.copy(), pd.DataFrame()
+
+    df = articles.copy().reset_index(drop=True)
+    token_sets: list[frozenset[str]] = [
+        url_path_token_set(u, min_token_len, stopwords) for u in df["url"].tolist()
+    ]
+    dts = pd.to_datetime(
+        df["seendate"], format="%Y%m%d%H%M%S", utc=True, errors="coerce"
+    )
+    day_ord = (
+        (dts.dt.normalize() - pd.Timestamp("1970-01-01", tz="UTC"))
+        .dt.days.fillna(-999999)
+        .astype(int)
+    )
+
+    inverted: dict[str, list[int]] = defaultdict(list)
+    for i, ts in enumerate(token_sets):
+        for t in ts:
+            if len(t) >= min_token_len:
+                inverted[t].append(i)
+
+    uf = _UnionFind(len(df))
+    pairs: set[tuple[int, int]] = set()
+    for i in range(len(df)):
+        di = int(day_ord.iloc[i])
+        for t in token_sets[i]:
+            for j in inverted.get(t, []):
+                if j <= i:
+                    continue
+                dj = int(day_ord.iloc[j])
+                if abs(di - dj) > date_window_days:
+                    continue
+                pairs.add((i, j))
+
+    for i, j in pairs:
+        inter = len(token_sets[i] & token_sets[j])
+        if inter < min_intersection:
+            continue
+        jac = _token_jaccard(token_sets[i], token_sets[j])
+        days_apart = abs(int(day_ord.iloc[i]) - int(day_ord.iloc[j]))
+        if jac >= jaccard_min or (
+            jac >= jaccard_min_near_date and days_apart <= max_days_apart
+        ):
+            uf.union(i, j)
+
+    groups: dict[int, list[int]] = defaultdict(list)
+    for i in range(len(df)):
+        groups[uf.find(i)].append(i)
+
+    kept_rows: list[int] = []
+    dropped_chunks: list[pd.DataFrame] = []
+    for _root, members in groups.items():
+        if len(members) == 1:
+            kept_rows.append(members[0])
+            continue
+        def _member_key(m: int) -> tuple:
+            dt = dts.iloc[m]
+            u = str(df.iloc[m]["url"])
+            if pd.isna(dt):
+                return (1, u)
+            return (0, dt, u)
+
+        best = min(members, key=_member_key)
+        kept_rows.append(best)
+        for m in members:
+            if m != best:
+                row = df.iloc[m : m + 1].copy()
+                row["kept_url"] = df.iloc[best]["url"]
+                row["dedupe_stage"] = "jaccard"
+                dropped_chunks.append(row)
+
+    kept = df.iloc[sorted(kept_rows)].copy()
+    dropped = (
+        pd.concat(dropped_chunks, ignore_index=True) if dropped_chunks else pd.DataFrame()
+    )
+    n_drop = n_in - len(kept)
+    print(f"  → Jaccard dedupe: removed {n_drop} row(s) ({n_in} → {len(kept)})")
+    return kept, dropped
+
+
+def parse_dedupe_mode_cli(s: str | None) -> list[str] | None:
+    if s is None:
+        return None
+    s = str(s).strip()
+    if not s:
+        return None
+    parts = [p.strip().lower() for p in s.split(",") if p.strip()]
+    allowed = {"path", "jaccard"}
+    for p in parts:
+        if p not in allowed:
+            sys.exit(
+                f"ERROR: --dedupe-mode invalid token {p!r}; "
+                "use path, jaccard, or path,jaccard"
+            )
+    if parts.count("path") > 1 or parts.count("jaccard") > 1:
+        sys.exit("ERROR: duplicate mode in --dedupe-mode")
+    if "path" in parts and "jaccard" in parts and parts != ["path", "jaccard"]:
+        sys.exit("ERROR: use --dedupe-mode path,jaccard (path must come before jaccard)")
+    return parts
+
+
+def dedupe_modes_from_meta(meta: dict) -> list[str]:
+    sec = meta.get("gdelt_enrich_url_dedupe")
+    if not isinstance(sec, dict):
+        return []
+    m = sec.get("modes")
+    if m is None:
+        return []
+    if isinstance(m, str):
+        parts = [p.strip().lower() for p in m.split(",") if p.strip()]
+    elif isinstance(m, (list, tuple)):
+        parts = [str(p).strip().lower() for p in m if str(p).strip()]
+    else:
+        return []
+    seen: set[str] = set()
+    raw: list[str] = []
+    for p in parts:
+        if p not in ("path", "jaccard"):
+            sys.exit(f"ERROR: gdelt_enrich_url_dedupe.modes invalid entry {p!r}")
+        if p not in seen:
+            seen.add(p)
+            raw.append(p)
+    out: list[str] = []
+    if "path" in seen:
+        out.append("path")
+    if "jaccard" in seen:
+        out.append("jaccard")
+    return out
+
+
+def jaccard_settings_from_meta(meta: dict) -> dict[str, object]:
+    sec = meta.get("gdelt_enrich_url_dedupe")
+    if not isinstance(sec, dict):
+        sec = {}
+    sw = sec.get("stopwords") or []
+    stop = {str(x).lower() for x in sw} if isinstance(sw, list) else set()
+    return {
+        "jaccard_min": float(sec.get("jaccard_min", 0.88)),
+        "jaccard_min_near_date": float(sec.get("jaccard_min_near_date", 0.72)),
+        "max_days_apart": int(sec.get("max_days_apart", 3)),
+        "date_window_days": int(sec.get("date_window_days", 4)),
+        "min_token_len": int(sec.get("min_token_len", 3)),
+        "min_intersection": int(sec.get("min_intersection", 4)),
+        "stopwords": stop,
+    }
+
+
+def resolve_dedupe_modes(cli_mode: str | None, meta: dict) -> list[str]:
+    parsed = parse_dedupe_mode_cli(cli_mode)
+    if parsed is not None:
+        return parsed
+    return dedupe_modes_from_meta(meta)
+
+
+def run_article_dedupes(
+    articles: pd.DataFrame,
+    modes: list[str],
+    report_path: str | None,
+    jaccard_kw: dict[str, object],
+) -> tuple[pd.DataFrame, int]:
+    df = articles
+    total_drop = 0
+    drop_parts: list[pd.DataFrame] = []
+    for mode in modes:
+        if mode == "path":
+            df, dropped = dedupe_articles_path(df)
+        elif mode == "jaccard":
+            df, dropped = dedupe_articles_jaccard(df, **jaccard_kw)
+        else:
+            sys.exit(f"ERROR: unknown dedupe mode {mode!r}")
+        total_drop += len(dropped)
+        if not dropped.empty:
+            drop_parts.append(dropped)
+    if report_path and drop_parts:
+        out = pd.concat(drop_parts, ignore_index=True)
+        Path(report_path).parent.mkdir(parents=True, exist_ok=True)
+        out.to_csv(report_path, index=False)
+        print(f"  → Wrote dedupe report: {report_path}")
+    return df, total_drop
+
+
 # ── BigQuery helpers ───────────────────────────────────────────────────────────
 
 def upload_urls_as_temp_table(client: bigquery.Client, project: str,
@@ -199,8 +547,7 @@ def build_query(url_table: str, start_date: str, end_date: str) -> str:
         g.V2Themes,
         g.V2Locations,
         g.V2Persons,
-        g.V2Tone,
-        g.SharingImage
+        g.V2Tone
     FROM
         `gdelt-bq.gdeltv2.gkg_partitioned` AS g
     INNER JOIN
@@ -210,6 +557,67 @@ def build_query(url_table: str, start_date: str, end_date: str) -> str:
         g._PARTITIONTIME >= TIMESTAMP("{start_date}")
         AND g._PARTITIONTIME <  TIMESTAMP("{end_date}")
     """
+
+
+def parse_prefetched_gkg_rows(
+    articles: pd.DataFrame,
+    primary_themes: set[str],
+    secondary_themes: set[str],
+    country_codes: tuple[str, ...],
+    subnational_types: set[int],
+) -> pd.DataFrame:
+    """
+    Build the same per-URL GKG parse as the BigQuery join path, using ``gkg_v2_*``
+    columns from ``gdelt-fetch-urls.py --source bigquery`` output.
+    """
+    rows: list[dict] = []
+    for _, row in tqdm(articles.iterrows(), total=len(articles), unit="article"):
+        url = str(row.get("url", "") or "").strip()
+        t_raw = str(row.get("gkg_v2_themes", "") or "")
+        l_raw = str(row.get("gkg_v2_locations", "") or "")
+        if not t_raw.strip() and not l_raw.strip():
+            rows.append({
+                "DocumentIdentifier": url,
+                "gkg_found": False,
+                "source_name": "",
+                "v2tone": None,
+                "theme_score": None,
+                "matched_themes": "",
+                "v2themes_raw": "",
+                "n_india_locations": None,
+                "best_lat": None,
+                "best_lon": None,
+                "best_location_name": None,
+                "best_adm1": None,
+                "all_india_locations": "",
+                "v2persons": str(row.get("gkg_v2_persons", "") or "")[:300],
+            })
+            continue
+        locs = parse_v2locations(l_raw)
+        themes = parse_themes(t_raw)
+        score, matched = score_themes(themes, primary_themes, secondary_themes)
+        best = best_india_location(locs, country_codes, subnational_types)
+        india = india_locations(locs, country_codes)
+        rows.append({
+            "DocumentIdentifier": url,
+            "gkg_found": True,
+            "source_name": "",
+            "v2tone": parse_tone(row.get("gkg_v2_tone", "")),
+            "theme_score": score,
+            "matched_themes": "; ".join(matched),
+            "v2themes_raw": t_raw[:400],
+            "n_india_locations": len(india),
+            "best_lat": best["lat"] if best else None,
+            "best_lon": best["lon"] if best else None,
+            "best_location_name": best["loc_name"] if best else None,
+            "best_adm1": best["adm1"] if best else None,
+            "all_india_locations": "; ".join(
+                f"{l['loc_name']} ({l['lat']:.3f},{l['lon']:.3f})"
+                for l in india
+            ) if india else "",
+            "v2persons": str(row.get("gkg_v2_persons", "") or "")[:300],
+        })
+    return pd.DataFrame(rows).rename(columns={"DocumentIdentifier": "url"})
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -224,6 +632,9 @@ def main(
     dry_run: bool,
     meta_path: str,
     url_table_reuse: str | None = None,
+    force_bigquery: bool = False,
+    dedupe_mode: str | None = None,
+    dedupe_report: str | None = None,
 ):
 
     meta = load_domain_meta(meta_path)
@@ -241,96 +652,149 @@ def main(
             sys.exit(f"ERROR: Input CSV missing column '{col}'. "
                      "Expected output from scripts/gdelt-fetch-urls.py")
 
-    # Date range for partition pruning
+    modes = resolve_dedupe_modes(dedupe_mode, meta)
+    if dedupe_report and not modes:
+        sys.exit(
+            "ERROR: --dedupe-report requires --dedupe-mode or "
+            "non-empty gdelt_enrich_url_dedupe.modes in meta."
+        )
+    if modes:
+        jkw = jaccard_settings_from_meta(meta)
+        articles, _ = run_article_dedupes(articles, modes, dedupe_report, jkw)
+
+    prefetch_ok = (
+        not force_bigquery
+        and {"gkg_v2_themes", "gkg_v2_locations", "gkg_v2_tone"}.issubset(
+            articles.columns
+        )
+    )
+
+    # Date range for partition pruning (BigQuery join path only)
     dates = pd.to_datetime(articles["seendate"], utc=True, errors="coerce").dropna()
     start_date = (dates.min() - timedelta(days=1)).strftime("%Y-%m-%d")
     end_date   = (dates.max() + timedelta(days=2)).strftime("%Y-%m-%d")
     print(f"  → Date range: {start_date} to {end_date}")
 
     if dry_run:
-        print("\n[DRY RUN] Showing query only — not executing.")
-        dummy_table = (
-            url_table_reuse.strip()
-            if url_table_reuse
-            else f"{project}.gdelt_hwc_temp.article_urls"
+        if prefetch_ok:
+            print(
+                "\n[DRY RUN] Would skip BigQuery join — gkg_v2_themes, "
+                "gkg_v2_locations, gkg_v2_tone present on input CSV."
+            )
+        else:
+            print("\n[DRY RUN] Showing query only — not executing.")
+            dummy_table = (
+                url_table_reuse.strip()
+                if url_table_reuse
+                else f"{project}.gdelt_hwc_temp.article_urls"
+            )
+            print(build_query(dummy_table, start_date, end_date))
+        return
+
+    gb_billed = 0.0
+
+    if prefetch_ok:
+        print(
+            "\nUsing prefetched gkg_v2_* columns from input CSV — skipping BigQuery join."
+            "\n  (Use --force-bigquery to join gkg_partitioned instead.)"
         )
-        print(build_query(dummy_table, start_date, end_date))
-        return
-
-    # ── BigQuery client ────────────────────────────────────────────────────
-    print(f"\nConnecting to BigQuery project: {project}")
-    client = bigquery.Client(project=project)
-
-    # ── Upload URL list (or reuse) ─────────────────────────────────────────
-    if url_table_reuse:
-        url_table = url_table_reuse.strip()
-        print(f"\nUsing existing URL table (skipping upload): {url_table}")
+        print("\nParsing locations and themes from prefetched columns...")
+        gkg_parsed = parse_prefetched_gkg_rows(
+            articles,
+            primary_themes,
+            secondary_themes,
+            country_codes,
+            subnational_types,
+        )
     else:
-        print("\nUploading URL list as temp table...")
-        url_table = upload_urls_as_temp_table(client, project, articles)
+        # ── BigQuery client ────────────────────────────────────────────────
+        print(f"\nConnecting to BigQuery project: {project}")
+        client = bigquery.Client(project=project)
 
-    # ── Run join query ─────────────────────────────────────────────────────
-    query = build_query(url_table, start_date, end_date)
-    print(f"\nRunning BigQuery join ({start_date} → {end_date})...")
-    print("  (BigQuery will tell you bytes billed after the job completes)")
+        # ── Upload URL list (or reuse) ───────────────────────────────────────
+        if url_table_reuse:
+            url_table = url_table_reuse.strip()
+            print(f"\nUsing existing URL table (skipping upload): {url_table}")
+        else:
+            print("\nUploading URL list as temp table...")
+            url_table = upload_urls_as_temp_table(client, project, articles)
 
-    job = client.query(query)
-    gkg_df = job.result().to_dataframe()
-    bytes_billed = job.total_bytes_billed or 0
-    gb_billed = bytes_billed / 1e9
-    print(f"  ✓ {len(gkg_df)} GKG rows returned")
-    print(f"  ✓ Bytes billed: {gb_billed:.2f} GB  "
-          f"({'FREE' if gb_billed < 1000 else 'OVER FREE TIER — check GCP console'})")
+        # ── Run join query ───────────────────────────────────────────────────
+        query = build_query(url_table, start_date, end_date)
+        print(f"\nRunning BigQuery join ({start_date} → {end_date})...")
+        print("  (BigQuery will tell you bytes billed after the job completes)")
 
-    if gkg_df.empty:
-        print("\n⚠ No matches found. Possible reasons:")
-        print("  - Articles pre-date GDELT v2 (before Feb 2015)")
-        print("  - URLs differ slightly (http vs https, trailing slash)")
-        print("  - Articles were behind paywalls and GDELT didn't ingest them")
-        articles.to_csv(out_unmatched, index=False)
-        return
+        job = client.query(query)
+        gkg_df = job.result().to_dataframe()
+        bytes_billed = job.total_bytes_billed or 0
+        gb_billed = bytes_billed / 1e9
+        print(f"  ✓ {len(gkg_df)} GKG rows returned")
+        print(f"  ✓ Bytes billed: {gb_billed:.2f} GB  "
+              f"({'FREE' if gb_billed < 1000 else 'OVER FREE TIER — check GCP console'})")
 
-    # ── Deduplicate GKG rows (same URL can appear in multiple 15-min files) ──
-    gkg_df = gkg_df.drop_duplicates(subset="DocumentIdentifier", keep="first")
-    print(f"  → After dedup: {len(gkg_df)} unique URLs matched")
+        if gkg_df.empty:
+            print("\n⚠ No matches found. Possible reasons:")
+            print("  - Articles pre-date GDELT v2 (before Feb 2015)")
+            print("  - URLs differ slightly (http vs https, trailing slash)")
+            print("  - Articles were behind paywalls and GDELT didn't ingest them")
+            articles.to_csv(out_unmatched, index=False)
+            return
 
-    # ── Parse GKG fields ───────────────────────────────────────────────────
-    print("\nParsing locations and themes...")
-    rows = []
-    for _, row in tqdm(gkg_df.iterrows(), total=len(gkg_df), unit="article"):
-        locs   = parse_v2locations(row.get("V2Locations", ""))
-        themes = parse_themes(row.get("V2Themes", ""))
-        score, matched = score_themes(themes, primary_themes, secondary_themes)
-        best   = best_india_location(locs, country_codes, subnational_types)
-        india  = india_locations(locs, country_codes)
+        # ── Deduplicate GKG rows (same URL can appear in multiple 15-min files) ──
+        gkg_df = gkg_df.drop_duplicates(subset="DocumentIdentifier", keep="first")
+        print(f"  → After dedup: {len(gkg_df)} unique URLs matched")
 
-        rows.append({
-            "DocumentIdentifier": row["DocumentIdentifier"],
-            "gkg_found":          True,
-            "source_name":        row.get("source_name", ""),
-            "v2tone":             parse_tone(row.get("V2Tone", "")),
-            "theme_score":        score,
-            "matched_themes":     "; ".join(matched),
-            "v2themes_raw":       str(row.get("V2Themes", ""))[:400],
-            "n_india_locations":  len(india),
-            "best_lat":           best["lat"]      if best else None,
-            "best_lon":           best["lon"]      if best else None,
-            "best_location_name": best["loc_name"] if best else None,
-            "best_adm1":          best["adm1"]     if best else None,
-            "all_india_locations": "; ".join(
-                f"{l['loc_name']} ({l['lat']:.3f},{l['lon']:.3f})"
-                for l in india
-            ) if india else "",
-            "v2persons":          str(row.get("V2Persons", ""))[:300],
-            "sharing_image":      row.get("SharingImage", ""),
-        })
+        # ── Parse GKG fields ────────────────────────────────────────────────
+        print("\nParsing locations and themes...")
+        rows = []
+        for _, row in tqdm(gkg_df.iterrows(), total=len(gkg_df), unit="article"):
+            locs   = parse_v2locations(row.get("V2Locations", ""))
+            themes = parse_themes(row.get("V2Themes", ""))
+            score, matched = score_themes(themes, primary_themes, secondary_themes)
+            best   = best_india_location(locs, country_codes, subnational_types)
+            india  = india_locations(locs, country_codes)
 
-    gkg_parsed = pd.DataFrame(rows).rename(
-        columns={"DocumentIdentifier": "url"}
-    )
+            rows.append({
+                "DocumentIdentifier": row["DocumentIdentifier"],
+                "gkg_found":          True,
+                "source_name":        row.get("source_name", ""),
+                "v2tone":             parse_tone(row.get("V2Tone", "")),
+                "theme_score":        score,
+                "matched_themes":     "; ".join(matched),
+                "v2themes_raw":       str(row.get("V2Themes", ""))[:400],
+                "n_india_locations":  len(india),
+                "best_lat":           best["lat"]      if best else None,
+                "best_lon":           best["lon"]      if best else None,
+                "best_location_name": best["loc_name"] if best else None,
+                "best_adm1":          best["adm1"]     if best else None,
+                "all_india_locations": "; ".join(
+                    f"{l['loc_name']} ({l['lat']:.3f},{l['lon']:.3f})"
+                    for l in india
+                ) if india else "",
+                "v2persons":          str(row.get("V2Persons", ""))[:300],
+            })
+
+        gkg_parsed = pd.DataFrame(rows).rename(
+            columns={"DocumentIdentifier": "url"}
+        )
 
     # ── Merge back onto original articles ──────────────────────────────────
-    enriched = articles.merge(gkg_parsed, on="url", how="left")
+    merge_left = articles
+    if prefetch_ok:
+        merge_left = articles.drop(
+            columns=[
+                c
+                for c in (
+                    "gkg_v2_themes",
+                    "gkg_v2_locations",
+                    "gkg_v2_tone",
+                    "gkg_v2_persons",
+                )
+                if c in articles.columns
+            ],
+            errors="ignore",
+        )
+    enriched = merge_left.merge(gkg_parsed, on="url", how="left")
     enriched["gkg_found"] = enriched["gkg_found"].fillna(False)
 
     # ── Save outputs ───────────────────────────────────────────────────────
@@ -415,6 +879,14 @@ if __name__ == "__main__":
     p.add_argument("--dry-run",   action="store_true",
                    help="Print the SQL query without executing it")
     p.add_argument(
+        "--force-bigquery",
+        action="store_true",
+        help=(
+            "Always join gkg_partitioned in BigQuery, even if gkg_v2_* columns exist "
+            "on the input CSV (from gdelt-fetch-urls.py --source bigquery)."
+        ),
+    )
+    p.add_argument(
         "--url-table",
         default=None,
         metavar="PROJECT.DATASET.TABLE",
@@ -422,6 +894,27 @@ if __name__ == "__main__":
             "Skip upload; join against this table (columns: DocumentIdentifier STRING, "
             "article_date DATE). Default upload targets PROJECT.gdelt_hwc_temp.article_urls "
             "with WRITE_TRUNCATE — same table each run, rows replaced, no extra tables."
+        ),
+    )
+    p.add_argument(
+        "--dedupe-mode",
+        default=None,
+        metavar="MODE",
+        help=(
+            "Deduplicate after load, before BigQuery/prefetch: "
+            "path (same normalized URL path across hosts), "
+            "jaccard (similar URL path tokens + date window), "
+            "or path,jaccard (both in order). Omit for no dedupe; "
+            "meta gdelt_enrich_url_dedupe.modes applies when this flag is omitted."
+        ),
+    )
+    p.add_argument(
+        "--dedupe-report",
+        default=None,
+        metavar="CSV",
+        help=(
+            "Write dropped rows (columns kept_url, dedupe_stage path|jaccard). "
+            "Requires a non-empty dedupe mode from --dedupe-mode or meta."
         ),
     )
     args = p.parse_args()
@@ -452,4 +945,7 @@ if __name__ == "__main__":
         dry_run     = args.dry_run,
         meta_path   = args.meta,
         url_table_reuse=args.url_table,
+        force_bigquery=args.force_bigquery,
+        dedupe_mode=args.dedupe_mode,
+        dedupe_report=args.dedupe_report,
     )
