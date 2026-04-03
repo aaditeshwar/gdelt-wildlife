@@ -53,6 +53,7 @@ def list_layer_descriptors(meta_dir: Path, outputs_dir: Path) -> list[dict]:
         domain = meta.get("domain") or {}
         title = domain.get("title") or stem
         gj = outputs_dir / f"{prefix}_points.geojson"
+        qml = outputs_dir / f"{prefix}_india_points.qml"
         out.append(
             {
                 "id": stem,
@@ -61,6 +62,7 @@ def list_layer_descriptors(meta_dir: Path, outputs_dir: Path) -> list[dict]:
                 "prefix": prefix,
                 "geojson_path": str(gj.relative_to(repo)) if gj.is_file() else None,
                 "has_geojson": gj.is_file(),
+                "has_qml": qml.is_file(),
             }
         )
     return out
@@ -78,6 +80,19 @@ def geojson_file_for_layer(repo: Path, layer_id: str) -> Path:
     return gj
 
 
+def qml_file_for_layer(repo: Path, layer_id: str) -> Path:
+    """QGIS categorized style: outputs/{prefix}_india_points.qml (see domain_paths.points_qml)."""
+    mp = meta_path_for_layer(repo, layer_id)
+    prefix = output_prefix(mp)
+    qml = (repo / "outputs" / f"{prefix}_india_points.qml").resolve()
+    root = repo.resolve()
+    if not str(qml).startswith(str(root)):
+        raise HTTPException(status_code=403, detail="invalid path")
+    if not qml.is_file():
+        raise HTTPException(status_code=404, detail="QML style not found for layer")
+    return qml
+
+
 def style_payload_for_layer(repo: Path, layer_id: str) -> dict:
     mp = meta_path_for_layer(repo, layer_id)
     meta = load_meta(mp)
@@ -88,4 +103,41 @@ def style_payload_for_layer(repo: Path, layer_id: str) -> dict:
         "merge_groups": ms.get("merge_groups") or [],
         "singleton_event_types": ms.get("singleton_event_types") or [],
         "fallback_category": ms.get("fallback_category", "other"),
+    }
+
+
+def meta_summary_for_layer(repo: Path, layer_id: str) -> dict:
+    """Public dashboard copy: domain blurb + discovery keywords + GKG themes + species examples."""
+    mp = meta_path_for_layer(repo, layer_id)
+    meta = load_meta(mp)
+    dom = meta.get("domain") or {}
+    doc = meta.get("gdelt_doc_fetch") or {}
+    themes = meta.get("gkg_theme_sets") or {}
+    tax = meta.get("taxonomy") or {}
+    species_ex = (tax.get("species") or {}).get("examples") or []
+    kw = doc.get("keywords") or []
+    if isinstance(kw, list):
+        gdelt_keywords = [str(x) for x in kw[:40]]
+    else:
+        gdelt_keywords = []
+    prim = themes.get("primary_themes") or []
+    sec = themes.get("secondary_themes") or []
+    if not isinstance(prim, list):
+        prim = []
+    if not isinstance(sec, list):
+        sec = []
+    return {
+        "domain": {
+            "id": str(dom.get("id", "")),
+            "title": str(dom.get("title", "")),
+            "description": str(dom.get("description", "")),
+        },
+        "methodology": {
+            "gdelt_keywords": gdelt_keywords,
+            "gkg_primary_themes": [str(x) for x in prim[:50]],
+            "gkg_secondary_themes": [str(x) for x in sec[:50]],
+            "species_examples": [str(x) for x in species_ex[:30]],
+            "fetch_start_date": doc.get("fetch_start_date"),
+            "fetch_end_date": doc.get("fetch_end_date"),
+        },
     }

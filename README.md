@@ -93,6 +93,8 @@ Builds a point GeoJSON from rows marked as HWC events with valid coordinates; op
 - **Inputs:** default `data/hwc_final_report_updated.csv` (or pass one or more `--input` CSVs); `meta/hwc_india_conflict_meta.json` (or your domain meta via `--meta`). With **multiple** `--input` files, URLs are de-duplicated (first wins) before building GeoJSON.
 - **Outputs:** `--output-geojson` (default `outputs/hwc_points.geojson`). With multiple inputs, **`--output-csv` is required** for the merged de-duplicated CSV. With `--write-qml`, default `outputs/{prefix}_india_points.qml`.
 
+The web map (`frontend`) includes a **legend with category checkboxes** (filter points), **Download GeoJSON**, and **Download QGIS style (QML)** when `outputs/{prefix}_india_points.qml` exists, plus a **Dashboard** link (opens `/dashboard?layer=…` in a new tab) with charts and methodology text from the layer meta.
+
 ---
 
 ## Web map (FastAPI + React)

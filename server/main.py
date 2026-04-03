@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -20,6 +21,8 @@ from server.git_auto import try_auto_commit
 from server.layer_util import (
     geojson_file_for_layer,
     list_layer_descriptors,
+    meta_summary_for_layer,
+    qml_file_for_layer,
     style_payload_for_layer,
 )
 from server.settings import settings
@@ -92,6 +95,17 @@ def api_layer_geojson(layer_id: str):
 @app.get("/api/layers/{layer_id}/style")
 def api_layer_style(layer_id: str):
     return style_payload_for_layer(settings.repo_root, layer_id)
+
+
+@app.get("/api/layers/{layer_id}/qml")
+def api_layer_qml(layer_id: str):
+    path = qml_file_for_layer(settings.repo_root, layer_id)
+    return FileResponse(path, media_type="application/xml", filename=path.name)
+
+
+@app.get("/api/layers/{layer_id}/meta-summary")
+def api_layer_meta_summary(layer_id: str):
+    return meta_summary_for_layer(settings.repo_root, layer_id)
 
 
 @app.post("/api/edits")

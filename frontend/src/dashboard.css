@@ -1,0 +1,74 @@
+.dashboard {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px 20px 48px;
+  font-size: 0.9rem;
+}
+
+.dashboard-head h1 {
+  margin: 0 0 4px;
+  font-size: 1.35rem;
+}
+
+.dashboard-layer {
+  margin: 0 0 8px;
+  font-size: 0.85rem;
+}
+
+.dashboard-back {
+  margin: 0 0 16px;
+}
+
+.dashboard-back a {
+  color: #1565c0;
+}
+
+.dashboard-method {
+  margin-bottom: 24px;
+  padding: 12px 14px;
+  background: #f5f5f5;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+}
+
+.dashboard-method h2 {
+  margin: 0 0 8px;
+  font-size: 1.05rem;
+}
+
+.dashboard-method p {
+  margin: 0 0 10px;
+  line-height: 1.45;
+}
+
+.dashboard-method p:last-child {
+  margin-bottom: 0;
+}
+
+.dashboard-method a {
+  color: #1565c0;
+  text-decoration: underline;
+}
+
+.dashboard-method a:hover {
+  color: #0d47a1;
+}
+
+.dashboard-count {
+  margin-bottom: 16px;
+}
+
+.dashboard-chart {
+  margin-bottom: 32px;
+}
+
+.dashboard-chart h2 {
+  margin: 0 0 8px;
+  font-size: 1.05rem;
+}
+
+.dashboard-chart .hint {
+  margin: 0 0 10px;
+  font-size: 0.8rem;
+  color: #555;
+}

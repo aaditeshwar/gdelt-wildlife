@@ -92,7 +92,10 @@
 }
 
 .map-legend-toggle {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   width: 100%;
   padding: 6px 10px;
   margin: 0;
@@ -103,6 +106,26 @@
   font-weight: 600;
   cursor: pointer;
   text-align: left;
+  color: #222;
+}
+
+.map-legend-toggle-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.map-legend-toggle-hint {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #555;
+  white-space: nowrap;
+}
+
+.map-legend-toggle-icon {
+  flex-shrink: 0;
+  font-size: 0.65rem;
+  line-height: 1;
+  color: #444;
 }
 
 .map-legend--open .map-legend-toggle {
@@ -129,10 +152,21 @@
 }
 
 .map-legend-item {
+  margin-top: 4px;
+}
+
+.map-legend-check {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 4px;
+  cursor: pointer;
+  margin: 0;
+  font: inherit;
+}
+
+.map-legend-check input {
+  flex-shrink: 0;
+  margin: 0;
 }
 
 .map-legend-item:first-child {
@@ -195,6 +229,16 @@
   border: 1px solid #ccc;
   border-radius: 4px;
   font: inherit;
+}
+
+.layer-dashboard-link {
+  margin: -2px 0 6px;
+  font-size: 0.85rem;
+}
+
+.layer-dashboard-link a {
+  color: #1565c0;
+  text-decoration: underline;
 }
 
 .layer-downloads {
