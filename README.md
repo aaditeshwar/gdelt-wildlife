@@ -90,8 +90,8 @@ Retries rows where `fetch_method` indicates failure, using Chrome/Selenium, then
 
 Builds a point GeoJSON from rows marked as HWC events with valid coordinates; optional QGIS categorized style.
 
-- **Inputs:** default `data/{prefix}_final_report_updated.csv`; `meta/hwc_india_conflict_meta.json` (or your domain meta via `--meta`).
-- **Outputs:** default `outputs/{prefix}_points.geojson`; with `--write-qml`, default `outputs/{prefix}_india_points.qml`.
+- **Inputs:** default `data/hwc_final_report_updated.csv` (or pass one or more `--input` CSVs); `meta/hwc_india_conflict_meta.json` (or your domain meta via `--meta`). With **multiple** `--input` files, URLs are de-duplicated (first wins) before building GeoJSON.
+- **Outputs:** `--output-geojson` (default `outputs/hwc_points.geojson`). With multiple inputs, **`--output-csv` is required** for the merged de-duplicated CSV. With `--write-qml`, default `outputs/{prefix}_india_points.qml`.
 
 ---
 
@@ -206,7 +206,7 @@ Each script documents its Python dependencies in the module docstring (`pip inst
 
 ## Overriding paths
 
-All scripts accept explicit `--input`, `--output`, and related flags. Defaults point at `data/` and `outputs/` under the repository root so you can relocate files without editing code.
+Most scripts accept explicit `--input`, output paths (`--output`, `--output-geojson`, etc.), and related flags. Defaults point at `data/` and `outputs/` under the repository root so you can relocate files without editing code.
 
 ## Domain configuration (`meta/*.json`)
 

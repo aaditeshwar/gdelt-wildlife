@@ -1,16 +1,17 @@
 """
 CSV → GeoJSON (HWC points) + optional QGIS QML style
 ===================================================
-Reads one or more extraction CSVs (concatenated in order), keeps rows where
-is_hwc_event is true, valid final_lon/final_lat, and writes a Point GeoJSON.
+Reads one or more extraction CSVs (merged in order; multiple files are de-duplicated
+by ``url`` with first occurrence kept), keeps rows where is_hwc_event is true,
+valid final_lon/final_lat, and writes a Point GeoJSON.
 
 Category field ``map_category`` follows meta/hwc_india_conflict_meta.json
 (merged event types for styling).
 
 Usage:
     python scripts/convert_csv_to_geojson.py
-    python scripts/convert_csv_to_geojson.py --input data/hwc_final_report_updated.csv --output outputs/hwc_points.geojson
-    python scripts/convert_csv_to_geojson.py --input run1/a.csv run2/b.csv --output outputs/hwc_points.geojson
+    python scripts/convert_csv_to_geojson.py --input data/hwc_final_report_updated.csv --output-geojson outputs/hwc_points.geojson
+    python scripts/convert_csv_to_geojson.py --input run1/a.csv run2/b.csv --output-csv data/merged.csv --output-geojson outputs/hwc_points.geojson
     python scripts/convert_csv_to_geojson.py --meta meta/hwc_india_conflict_meta.json --write-qml outputs/hwc_india_points.qml
 """
 
@@ -176,6 +177,15 @@ def _xml_escape(s: str) -> str:
     )
 
 
+def dedupe_by_url(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Keep first row per ``url``; returns (deduped_df, n_dropped)."""
+    if "url" not in df.columns:
+        sys.exit("ERROR: column 'url' required for de-duplication across input files")
+    n_before = len(df)
+    out = df.drop_duplicates(subset=["url"], keep="first", ignore_index=True)
+    return out, n_before - len(out)
+
+
 def main() -> None:
     root = Path(__file__).resolve().parent.parent
     p = argparse.ArgumentParser(description="Convert extraction CSV to GeoJSON points + optional QML")
@@ -195,9 +205,20 @@ def main() -> None:
         help="Domain meta JSON (categories, colors)",
     )
     p.add_argument(
-        "--output",
+        "--output-geojson",
+        dest="output_geojson",
         default=str(root / "outputs" / "hwc_points.geojson"),
         help="Output GeoJSON path",
+    )
+    p.add_argument(
+        "--output-csv",
+        dest="output_csv",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Required with multiple --input files: write URL-deduplicated merged CSV "
+            "(first occurrence wins, input order preserved)."
+        ),
     )
     p.add_argument(
         "--write-qml",
@@ -224,14 +245,29 @@ def main() -> None:
         if not inp.is_file():
             sys.exit(f"ERROR: input CSV not found: {inp}")
 
+    multi_input = len(csv_paths) > 1
+    if multi_input and not args.output_csv:
+        p.error("--output-csv is required when multiple input CSVs are given")
+    if not multi_input and args.output_csv:
+        p.error("--output-csv is only used when multiple input CSVs are given")
+
     frames = [pd.read_csv(p, dtype=object) for p in csv_paths]
     df = pd.concat(frames, ignore_index=True)
+    if multi_input:
+        df, n_dup = dedupe_by_url(df)
+        if n_dup:
+            print(f"De-duplicated by url: dropped {n_dup} duplicate row(s) (keep first)")
 
     with open(meta_path, encoding="utf-8") as f:
         meta = json.load(f)
 
     field_cat = meta.get("map_style", {}).get("category_field", "map_category")
     df = ensure_event_id_column(df)
+    if multi_input:
+        out_csv = Path(args.output_csv).expanduser()
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(out_csv, index=False, encoding="utf-8")
+        print(f"Wrote merged de-duplicated CSV -> {out_csv}")
     filter_spec = meta.get("data_binding", {}).get("final_report_csv", {}).get("filter_hwc_events", {})
     col_flag = filter_spec.get("column", "is_hwc_event")
     if col_flag not in df.columns:
@@ -286,12 +322,12 @@ def main() -> None:
 
     fc = {
         "type": "FeatureCollection",
-        "name": Path(args.output).stem,
+        "name": Path(args.output_geojson).stem,
         "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}},
         "features": features,
     }
 
-    out_path = Path(args.output)
+    out_path = Path(args.output_geojson).expanduser()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(fc, f, ensure_ascii=False, indent=2)
