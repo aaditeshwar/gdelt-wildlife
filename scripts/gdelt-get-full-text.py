@@ -45,6 +45,8 @@ Usage:
     python scripts/gdelt-get-full-text.py --retry-failed-from
     python scripts/gdelt-get-full-text.py --retry-failed-from data/hwc_final_report.csv --output data/hwc_final_report_updated.csv
     python scripts/gdelt-get-full-text.py --retry-failed-from --proxy-server http://proxy.example.com:8080
+    python scripts/gdelt-get-full-text.py --sample 100 --fetch-workers 4
+    python scripts/gdelt-get-full-text.py --retry-failed-from --selenium-workers 2
 """
 
 import argparse
@@ -55,7 +57,9 @@ import os
 import random
 import re
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import pandas as pd
@@ -703,6 +707,132 @@ def accumulate_stats_from_result(stats: dict, result_row: dict) -> None:
                 stats["no_geocode"] += 1
 
 
+def _selenium_retry_one_index(
+    idx,
+    df: pd.DataFrame,
+    driver,
+    output_csv: str,
+    df_lock: threading.Lock,
+    model: str,
+    no_geocode: bool,
+    system_prompt: str,
+    extraction_prompt: str,
+    i_display: int,
+    n_total: int,
+) -> tuple[int, int]:
+    """
+    Process one failed row with Selenium + LLM. Returns (n_ok_delta, n_bad_delta).
+    Ollama runs outside the lock; df writes and to_csv are inside the lock.
+    """
+    row = df.loc[idx]
+    url = str(row.get("url", "") or "").strip()
+    title = row.get("title", "")
+    pub_date = str(row.get("pub_date", "") or "")
+    gdelt_lat = row.get("gdelt_lat", "")
+    gdelt_lon = row.get("gdelt_lon", "")
+    gdelt_loc = (
+        row.get("gdelt_location_match")
+        or row.get("gdelt_all_india_locations_hint")
+        or row.get("all_india_locations")
+        or ""
+    )
+    gdelt_loc = str(gdelt_loc) if gdelt_loc and str(gdelt_loc) != "nan" else ""
+
+    log.debug("=" * 72)
+    log.debug(
+        "[%s/%s] Selenium retry df_index=%s url=%s",
+        i_display,
+        n_total,
+        idx,
+        url,
+    )
+    log.debug(
+        "  row: title=%r pub_date=%r gdelt_loc_hint_len=%s",
+        (str(title)[:100] + "…") if len(str(title)) > 100 else title,
+        pub_date,
+        len(gdelt_loc),
+    )
+
+    if not url:
+        log.debug("  skip: empty url")
+        with df_lock:
+            df.at[idx, "fetch_method"] = "failed_selenium"
+            df.at[idx, "_error"] = "empty url"
+            df.to_csv(output_csv, index=False)
+        time.sleep(SLEEP_JINA)
+        return 0, 1
+
+    html = fetch_html_selenium(driver, url)
+    if not html:
+        log.debug("  Selenium returned no html → failed_selenium")
+        with df_lock:
+            df.at[idx, "fetch_method"] = "failed_selenium"
+            df.at[idx, "_error"] = "selenium could not load page"
+            df.to_csv(output_csv, index=False)
+        time.sleep(SLEEP_JINA)
+        return 0, 1
+
+    article_text = extract_text_from_html(html, url)
+    if not article_text:
+        log.debug(
+            "  trafilatura returned no usable text (see extract_text_from_html logs above)",
+        )
+        with df_lock:
+            df.at[idx, "fetch_method"] = "failed_selenium"
+            df.at[idx, "_error"] = "selenium/trafilatura could not extract article text"
+            df.to_csv(output_csv, index=False)
+        time.sleep(SLEEP_JINA)
+        return 0, 1
+
+    log.debug("  pipeline: process_fetched_article (chars=%s)", len(article_text))
+    eid = str(row.get("event_id", "") or "").strip()
+    out = process_fetched_article(
+        url=url,
+        title=title,
+        pub_date=pub_date,
+        gdelt_lat=gdelt_lat,
+        gdelt_lon=gdelt_lon,
+        gdelt_loc=str(gdelt_loc),
+        article_text=article_text,
+        fetch_method="selenium",
+        model=model,
+        no_geocode=no_geocode,
+        event_id=eid,
+        system_prompt=system_prompt,
+        extraction_prompt=extraction_prompt,
+    )
+    with df_lock:
+        for k, v in out.items():
+            if k not in df.columns:
+                df[k] = ""
+            df.at[idx, k] = _pilot_scalar_for_csv(v)
+        df.to_csv(output_csv, index=False)
+    log.debug(
+        "  Selenium retry OK: fetch_method=%s is_hwc_event=%r geocode_source=%r",
+        out.get("fetch_method"),
+        out.get("is_hwc_event"),
+        out.get("geocode_source"),
+    )
+    time.sleep(SLEEP_JINA)
+    return 1, 0
+
+
+def _split_into_n_chunks(lst: list, n: int) -> list[list]:
+    """Split lst into up to n non-empty contiguous chunks (roughly equal size)."""
+    if not lst or n <= 1:
+        return [lst] if lst else []
+    k = len(lst)
+    base, rem = divmod(k, n)
+    out: list[list] = []
+    i = 0
+    for j in range(n):
+        size = base + (1 if j < rem else 0)
+        if size:
+            out.append(lst[i : i + size])
+            i += size
+    return out
+
+
 def retry_failed_pilot_results(
     pilot_csv: str,
     output_csv: str,
@@ -711,6 +841,7 @@ def retry_failed_pilot_results(
     verbose: bool,
     max_retries: int | None,
     proxy_server: str | None = None,
+    selenium_workers: int = 1,
     *,
     system_prompt: str,
     extraction_prompt: str,
@@ -788,106 +919,83 @@ def retry_failed_pilot_results(
     df.to_csv(output_csv, index=False)
     print(f"  → Initial snapshot ({len(df)} rows) → {output_csv}")
 
-    log.debug("Starting Chrome driver for %s failed-row retries", len(to_process))
-    driver = make_chrome_driver(proxy_server=proxy_server)
+    df_lock = threading.Lock()
     n_ok = n_still_bad = 0
-    try:
-        for i, idx in enumerate(tqdm(to_process, unit="article", disable=verbose), start=1):
-            try:
-                row = df.loc[idx]
-                url = str(row.get("url", "") or "").strip()
-                title = row.get("title", "")
-                pub_date = str(row.get("pub_date", "") or "")
-                gdelt_lat = row.get("gdelt_lat", "")
-                gdelt_lon = row.get("gdelt_lon", "")
-                gdelt_loc = (
-                    row.get("gdelt_location_match")
-                    or row.get("gdelt_all_india_locations_hint")
-                    or row.get("all_india_locations")
-                    or ""
-                )
-                gdelt_loc = str(gdelt_loc) if gdelt_loc and str(gdelt_loc) != "nan" else ""
 
-                log.debug("=" * 72)
-                log.debug(
-                    "[%s/%s] Selenium retry df_index=%s url=%s",
+    if selenium_workers <= 1:
+        log.debug("Starting Chrome driver for %s failed-row retries", len(to_process))
+        driver = make_chrome_driver(proxy_server=proxy_server)
+        try:
+            for i, idx in enumerate(tqdm(to_process, unit="article", disable=verbose), start=1):
+                o, b = _selenium_retry_one_index(
+                    idx,
+                    df,
+                    driver,
+                    output_csv,
+                    df_lock,
+                    model,
+                    no_geocode,
+                    system_prompt,
+                    extraction_prompt,
                     i,
                     len(to_process),
-                    idx,
-                    url,
                 )
-                log.debug(
-                    "  row: title=%r pub_date=%r gdelt_loc_hint_len=%s",
-                    (str(title)[:100] + "…") if len(str(title)) > 100 else title,
-                    pub_date,
-                    len(gdelt_loc),
-                )
+                n_ok += o
+                n_still_bad += b
+        finally:
+            try:
+                log.debug("Selenium: quitting webdriver")
+                driver.quit()
+            except Exception as e:
+                log.debug("Selenium: driver.quit() raised %s", e)
+    else:
+        sw = max(1, min(int(selenium_workers), len(to_process)))
+        chunks = _split_into_n_chunks(to_process, sw)
+        print(
+            f"  → Selenium parallel workers: {len(chunks)} "
+            f"(one Chrome driver per worker; df writes serialized)"
+        )
 
-                if not url:
-                    log.debug("  skip: empty url")
-                    df.at[idx, "fetch_method"] = "failed_selenium"
-                    df.at[idx, "_error"] = "empty url"
-                    n_still_bad += 1
-                    time.sleep(SLEEP_JINA)
-                    continue
-
-                html = fetch_html_selenium(driver, url)
-                if not html:
-                    log.debug("  Selenium returned no html → failed_selenium")
-                    df.at[idx, "fetch_method"] = "failed_selenium"
-                    df.at[idx, "_error"] = "selenium could not load page"
-                    n_still_bad += 1
-                    time.sleep(SLEEP_JINA)
-                    continue
-
-                article_text = extract_text_from_html(html, url)
-                if not article_text:
-                    log.debug(
-                        "  trafilatura returned no usable text (see extract_text_from_html logs above)",
+        def _chunk_worker(chunk: list):
+            wdriver = make_chrome_driver(proxy_server=proxy_server)
+            n_ok_l = n_bad_l = 0
+            try:
+                for j, idx in enumerate(chunk, start=1):
+                    o, b = _selenium_retry_one_index(
+                        idx,
+                        df,
+                        wdriver,
+                        output_csv,
+                        df_lock,
+                        model,
+                        no_geocode,
+                        system_prompt,
+                        extraction_prompt,
+                        j,
+                        len(chunk),
                     )
-                    df.at[idx, "fetch_method"] = "failed_selenium"
-                    df.at[idx, "_error"] = "selenium/trafilatura could not extract article text"
-                    n_still_bad += 1
-                    time.sleep(SLEEP_JINA)
-                    continue
-
-                log.debug("  pipeline: process_fetched_article (chars=%s)", len(article_text))
-                eid = str(row.get("event_id", "") or "").strip()
-                out = process_fetched_article(
-                    url=url,
-                    title=title,
-                    pub_date=pub_date,
-                    gdelt_lat=gdelt_lat,
-                    gdelt_lon=gdelt_lon,
-                    gdelt_loc=str(gdelt_loc),
-                    article_text=article_text,
-                    fetch_method="selenium",
-                    model=model,
-                    no_geocode=no_geocode,
-                    event_id=eid,
-                    system_prompt=system_prompt,
-                    extraction_prompt=extraction_prompt,
-                )
-                for k, v in out.items():
-                    if k not in df.columns:
-                        df[k] = ""
-                    df.at[idx, k] = _pilot_scalar_for_csv(v)
-                n_ok += 1
-                log.debug(
-                    "  Selenium retry OK: fetch_method=%s is_hwc_event=%r geocode_source=%r",
-                    out.get("fetch_method"),
-                    out.get("is_hwc_event"),
-                    out.get("geocode_source"),
-                )
-                time.sleep(SLEEP_JINA)
+                    n_ok_l += o
+                    n_bad_l += b
             finally:
-                df.to_csv(output_csv, index=False)
-    finally:
-        try:
-            log.debug("Selenium: quitting webdriver")
-            driver.quit()
-        except Exception as e:
-            log.debug("Selenium: driver.quit() raised %s", e)
+                try:
+                    log.debug("Selenium: quitting worker webdriver")
+                    wdriver.quit()
+                except Exception as e:
+                    log.debug("Selenium: worker driver.quit() raised %s", e)
+            return n_ok_l, n_bad_l
+
+        with ThreadPoolExecutor(max_workers=len(chunks)) as ex:
+            futures = [ex.submit(_chunk_worker, ch) for ch in chunks]
+            for fut in tqdm(
+                as_completed(futures),
+                total=len(futures),
+                unit="worker",
+                disable=verbose,
+                desc="Selenium workers",
+            ):
+                o, b = fut.result()
+                n_ok += o
+                n_still_bad += b
 
     print(f"\n✓ Updated results saved → {output_csv}")
     print(f"  Selenium succeeded: {n_ok}  Still failed: {n_still_bad}")
@@ -904,6 +1012,7 @@ def main(
     seed: int,
     model: str,
     verbose: bool = False,
+    fetch_workers: int = 1,
     *,
     system_prompt: str,
     extraction_prompt: str,
@@ -976,15 +1085,40 @@ def main(
 
     init_incremental_final_report_csv(Path(output_csv), FINAL_REPORT_COLUMNS)
 
-    print(f"\nProcessing {len(sample)} articles (writing each row to {output_csv})...\n")
+    n_sample = len(sample)
     use_tqdm = not verbose
-    iterator = tqdm(
-        sample.iterrows(),
-        total=len(sample),
+    row_items = list(sample.iterrows())
+
+    if fetch_workers > 1:
+        urls = [str(row.get("url", "")) for _, row in row_items]
+        print(
+            f"\nProcessing {n_sample} articles (writing each row to {output_csv})...\n"
+            f"  Fetch: {fetch_workers} parallel workers (Jina + trafilatura); "
+            "then sequential LLM + geocode per row.\n"
+        )
+        with ThreadPoolExecutor(max_workers=fetch_workers) as ex:
+            fetch_results = list(
+                tqdm(
+                    ex.map(fetch_article, urls, chunksize=1),
+                    total=n_sample,
+                    unit="url",
+                    disable=not use_tqdm,
+                    desc="Fetch (parallel)",
+                )
+            )
+    else:
+        print(f"\nProcessing {n_sample} articles (writing each row to {output_csv})...\n")
+        fetch_results = None
+
+    llm_bar = tqdm(
+        range(n_sample),
+        total=n_sample,
         unit="article",
         disable=not use_tqdm,
+        desc="LLM + geocode",
     )
-    for idx, (_, row) in enumerate(iterator, start=1):
+    for seq in llm_bar:
+        _, row = row_items[seq]
         url       = str(row.get("url", ""))
         pub_date  = str(row.get("seendate", ""))
         gdelt_lat = row.get("best_lat", "")
@@ -993,7 +1127,7 @@ def main(
         title     = row.get("title", "")
 
         log.debug("=" * 72)
-        log.debug("[%s/%s] URL: %s", idx, len(sample), url)
+        log.debug("[%s/%s] URL: %s", seq + 1, n_sample, url)
         log.debug("  title: %s", (str(title)[:120] + "…") if len(str(title)) > 120 else title)
         log.debug(
             "  GDELT hints: best_lat=%r best_lon=%r all_india_locations/best_name=%r",
@@ -1014,7 +1148,11 @@ def main(
 
         # ── 1. Fetch article text ──────────────────────────────────────────
         log.debug("  [fetch] trying Jina then trafilatura…")
-        article_text, fetch_method = fetch_article(url)
+        if fetch_results is not None:
+            article_text, fetch_method = fetch_results[seq]
+        else:
+            article_text, fetch_method = fetch_article(url)
+            time.sleep(SLEEP_JINA)
         result_row["fetch_method"] = fetch_method
         stats[f"fetch_{fetch_method}"] += 1
         log.debug(
@@ -1022,7 +1160,6 @@ def main(
             fetch_method,
             len(article_text) if article_text else 0,
         )
-        time.sleep(SLEEP_JINA)
 
         if not article_text:
             result_row.update({
@@ -1209,7 +1346,31 @@ if __name__ == "__main__":
         default=str(meta_path_default(_root)),
         help="Domain meta JSON (llm_extraction prompts, gkg_theme_sets for sampling)",
     )
+    p.add_argument(
+        "--fetch-workers",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "First run only: number of parallel threads for Jina + trafilatura fetch "
+            "(default 1 = sequential with delay between URLs). LLM and geocode run one row at a time."
+        ),
+    )
+    p.add_argument(
+        "--selenium-workers",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "With --retry-failed-from: number of parallel workers, each with its own Chrome driver "
+            "(default 1). Higher values use more RAM/CPU; CSV writes are locked."
+        ),
+    )
     args = p.parse_args()
+    if args.fetch_workers < 1:
+        p.error("--fetch-workers must be >= 1")
+    if args.selenium_workers < 1:
+        p.error("--selenium-workers must be >= 1")
 
     _pfx = output_prefix(args.meta)
     if args.input is None:
@@ -1241,6 +1402,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             max_retries=max_r,
             proxy_server=args.proxy_server,
+            selenium_workers=args.selenium_workers,
             system_prompt=system_prompt,
             extraction_prompt=extraction_prompt,
         )
@@ -1254,6 +1416,7 @@ if __name__ == "__main__":
             seed          = args.seed,
             model         = args.model,
             verbose       = args.verbose,
+            fetch_workers = args.fetch_workers,
             system_prompt = system_prompt,
             extraction_prompt = extraction_prompt,
             theme_hc_min  = theme_hc_min,

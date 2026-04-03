@@ -79,6 +79,7 @@ Fetches article text (Jina / trafilatura), runs the local Ollama model for struc
 
 - **Inputs:** default `data/{prefix}_urls_geocoded.csv` (GDELT/GKG columns; no `fetch_method` column); `--meta` for `llm_extraction` prompts and `gkg_theme_sets.high_confidence_theme_score_min` (used when sampling by `theme_score`).
 - **Outputs:** `data/{prefix}_final_report.csv`, `outputs/{prefix}_final_report.txt`.
+- **Parallel fetch:** **`--fetch-workers N`** (default **1**) runs **Jina + trafilatura** in up to **N** threads; **Ollama + geocode** still run **one row at a time** in order. Values **greater than 1** increase concurrent load on Jina and remote sites; use **1** to keep the previous sequential behavior (including the delay between URL fetches).
 
 ### 4. `scripts/gdelt-get-full-text.py` (optional second run — Selenium retry)
 
@@ -86,6 +87,7 @@ Retries rows where `fetch_method` indicates failure, using Chrome/Selenium, then
 
 - **Inputs:** `--retry-failed-from` → default `data/{prefix}_final_report.csv` (must include `fetch_method`). The script merges location hints from `data/{prefix}_urls_geocoded.csv` (prefix inferred from the final report CSV filename).
 - **Outputs:** default `data/{prefix}_final_report_updated.csv`.
+- **Parallel Selenium:** **`--selenium-workers N`** (default **1**) uses **N** workers, each with its **own Chrome driver**, splitting failed rows across workers. DataFrame updates and CSV writes use a lock. Higher **N** uses more RAM and CPU; **1** matches the original single-browser loop.
 
 ### 5. `scripts/convert_csv_to_geojson.py`
 
