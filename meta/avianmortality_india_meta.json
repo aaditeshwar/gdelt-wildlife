@@ -1,9 +1,9 @@
 {
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "domain": {
     "id": "avian_influenza_surveillance_india",
     "title": "Avian influenza and bird mortality (India)",
-    "description": "Indian news articles reporting avian influenza (HPAI/LPAI), mass bird mortality, domestic poultry outbreaks, and human bird-flu cases. Wild birds, farm poultry, and mixed One Health contexts are in scope. Spatial analysis uses wetlands, flyways, farms, and human case locations. Pipeline: gdelt-fetch-urls.py → gdelt-enrich-urls-bigquery.py → gdelt-get-full-text.py → convert_csv_to_geojson.py. LLM JSON uses is_hwc_event (CSV column name, shared with HWC pipeline) as the boolean 'include this article' flag.",
+    "description": "Indian news articles reporting avian influenza (HPAI/LPAI), mass bird mortality, domestic poultry outbreaks, and human bird-flu cases. Wild birds, farm poultry, backyard flocks, live-bird markets, environmental mass mortality, and mixed One Health contexts are in scope. Taxonomy fields bird_type and habitat_type distinguish wild vs poultry hosts and farm vs wetland vs environmental settings. Pipeline: gdelt-fetch-urls.py → gdelt-enrich-urls-bigquery.py → gdelt-get-full-text.py → convert_csv_to_geojson.py. LLM JSON uses is_hwc_event (CSV column name, shared with HWC pipeline) as the boolean 'include this article' flag.",
     "related_scripts": [
       "scripts/gdelt-fetch-urls.py",
       "scripts/gdelt-enrich-urls.py",
@@ -184,6 +184,12 @@
       "",
       "STEP 3 — Other fields (when is_hwc_event is true)",
       "  - species: primary species or host (e.g. bar-headed goose, chicken, crow, human, mixed). Lowercase.",
+      "  - bird_type: ecological/host category — use taxonomy values (migratory_waterbird, resident_waterbird,",
+      "    poultry, backyard_poultry, raptor, corvid, shorebird, seabird, gamebird, human, mixed, unknown).",
+      "    Use poultry for commercial farm flocks; backyard_poultry for village/smallhold flocks; human when the case subject is human.",
+      "  - habitat_type: where mortality or outbreak occurred — use taxonomy values (poultry_farm, backyard_flock,",
+      "    livebird_market, wetland_*, sanctuary_*, open_field, forest, coastal, urban, poultry_adjacent, environmental_stress, unknown).",
+      "    Use poultry_farm for integrated/commercial farms; environmental_stress for heat, storms, hail, pollution, drought-related mass mortality.",
       "  - victims: optional counts — humans_killed, humans_injured, animals_killed, animals_injured (use integers or null).",
       "    For birds, put bird death toll in animals_killed when a number is given.",
       "  - event_date: YYYY-MM-DD for the main event or first report; null if unknown.",
@@ -203,6 +209,8 @@
       "  \"is_hwc_event\": true or false,",
       "  \"event_type\": \"ai_wild_birds | ai_domestic_poultry | ai_mixed_wild_domestic | human_bird_flu | other_avian_disease | non_ai_mortality | not_applicable\",",
       "  \"species\": null,",
+      "  \"bird_type\": null,",
+      "  \"habitat_type\": null,",
       "  \"victims\": {{",
       "    \"humans_killed\": null,",
       "    \"humans_injured\": null,",
@@ -224,7 +232,7 @@
       "gdelt_locations",
       "article_text"
     ],
-    "notes": "extraction_prompt_lines is joined with newlines then formatted with .format(**kwargs). Literal braces in the JSON example use doubled {{ }} in the joined string. Pipeline gdelt-get-full-text.py maps is_hwc_event, species, event_type, victims.* to CSV columns."
+    "notes": "extraction_prompt_lines is joined with newlines then formatted with .format(**kwargs). Literal braces in the JSON example use doubled {{ }} in the joined string. Pipeline gdelt-get-full-text.py maps is_hwc_event, species, event_type, bird_type, habitat_type, victims.* to CSV columns."
   },
 
   "data_binding": {
@@ -257,6 +265,8 @@
         "animals_killed",
         "animals_injured",
         "extraction_notes",
+        "bird_type",
+        "habitat_type",
         "fetch_method"
       ]
     }
@@ -276,22 +286,28 @@
       ]
     },
     "bird_type": {
-      "description": "Legacy ecological category; optional detail may appear in extraction_notes.",
+      "description": "Broad host/ecological category for affected birds (or human for human_bird_flu). Covers wild, farm poultry, and backyard flocks.",
       "allowed_values": [
         "migratory_waterbird",
         "resident_waterbird",
+        "poultry",
+        "backyard_poultry",
         "raptor",
         "corvid",
         "shorebird",
         "seabird",
         "gamebird",
+        "human",
         "mixed",
         "unknown"
       ]
     },
     "habitat_type": {
-      "description": "Habitat where mortality was found (optional nuance in extraction_notes).",
+      "description": "Setting where mortality or outbreak occurred: farms, markets, wild habitats, or environmental mass-mortality contexts.",
       "allowed_values": [
+        "poultry_farm",
+        "backyard_flock",
+        "livebird_market",
         "wetland_lake",
         "wetland_reservoir",
         "wetland_river",
@@ -302,6 +318,7 @@
         "coastal",
         "urban",
         "poultry_adjacent",
+        "environmental_stress",
         "unknown"
       ]
     },

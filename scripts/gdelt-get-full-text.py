@@ -211,6 +211,8 @@ FINAL_REPORT_COLUMNS = (
     "is_hwc_event",
     "species",
     "event_type",
+    "bird_type",
+    "habitat_type",
     "humans_killed",
     "humans_injured",
     "animals_killed",
@@ -758,6 +760,8 @@ def process_fetched_article(
         "is_hwc_event":        extracted.get("is_hwc_event"),
         "species":             extracted.get("species"),
         "event_type":          extracted.get("event_type"),
+        "bird_type":           extracted.get("bird_type"),
+        "habitat_type":        extracted.get("habitat_type"),
         "humans_killed":       (extracted.get("victims") or {}).get("humans_killed"),
         "humans_injured":      (extracted.get("victims") or {}).get("humans_injured"),
         "animals_killed":      (extracted.get("victims") or {}).get("animals_killed"),
@@ -1462,6 +1466,7 @@ def main(
             )
             result_row.update({
                 "is_hwc_event": None, "species": None, "event_type": None,
+                "bird_type": None, "habitat_type": None,
                 "event_date": None, "primary_location": None,
                 "location_type": None, "confidence": None,
                 "final_lat": gdelt_lat, "final_lon": gdelt_lon,
