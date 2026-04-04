@@ -79,7 +79,8 @@ Fetches article text (Jina / trafilatura), runs the local Ollama model for struc
 
 - **Inputs:** default `data/{prefix}_urls_geocoded.csv` (GDELT/GKG columns; no `fetch_method` column); `--meta` for `llm_extraction` prompts and `gkg_theme_sets.high_confidence_theme_score_min` (used when sampling by `theme_score`).
 - **Outputs:** `data/{prefix}_final_report.csv`, `outputs/{prefix}_final_report.txt`.
-- **Parallel fetch:** **`--fetch-workers N`** (default **1**) is only applied when **`--parallel-jina`** is passed or **`GDELT_PARALLEL_JINA`** is set to **`1`**, **`true`**, **`yes`**, or **`on`**; then **Jina** runs in up to **N** threads and **trafilatura** runs **sequentially** on the main thread. Other non-empty env values print a warning and are treated as off. Otherwise **`--fetch-workers` > 1** is ignored and fetch stays **sequential** (some environments hung with parallel Jina). The pool uses non-blocking shutdown and bounded HTTP timeouts; **`TRAFILATURA_DOWNLOAD_TIMEOUT`** caps **`requests.get`** connect/read for the trafilatura fallback (HTML download), then trafilatura extracts text locally. **Ollama + geocode** still run **one row at a time** in order.
+- **Parallel fetch:** **`--fetch-workers N`** (default **1**) — when **N > 1**, **Jina** and **trafilatura** fallback each use up to **N** threads (non-blocking pool shutdown, bounded HTTP timeouts). **`TRAFILATURA_DOWNLOAD_TIMEOUT`** caps **`requests.get`** for the trafilatura path. **Ollama + geocode** still run **one row at a time** in order.
+- **Article text cache:** per-event files under **`data/{prefix}_article_text/`** (`{event_id}.txt` + `.meta.json`), or **`GDELT_ARTICLE_TEXT_DIR`** / **`--article-text-dir`**. Existing cache is reused unless **`--force-fetch`**. **`--llm-only`** skips all article HTTP and runs the LLM only on cached text.
 
 ### 4. `scripts/gdelt-get-full-text.py` (optional second run — Selenium retry)
 

@@ -1,9 +1,9 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "domain": {
-    "id": "wild_bird_mortality_india",
-    "title": "Wild bird mass mortality events (India)",
-    "description": "Specific, real incidents in which unusual numbers of wild birds were found dead or dying in India, with particular focus on events that may indicate avian influenza (HPAI H5N1/H5N8/H9N2) or other epizootic disease outbreaks. Spatial patterns of mortality events across wetlands, migratory flyways, and poultry-wildlife interfaces are the primary analytical goal. Pipeline: gdelt-fetch-urls.py → gdelt-enrich-urls-bigquery.py → gdelt-get-full-text.py → convert_csv_to_geojson.py.",
+    "id": "avian_influenza_surveillance_india",
+    "title": "Avian influenza and bird mortality (India)",
+    "description": "Indian news articles reporting avian influenza (HPAI/LPAI), mass bird mortality, domestic poultry outbreaks, and human bird-flu cases. Wild birds, farm poultry, and mixed One Health contexts are in scope. Spatial analysis uses wetlands, flyways, farms, and human case locations. Pipeline: gdelt-fetch-urls.py → gdelt-enrich-urls-bigquery.py → gdelt-get-full-text.py → convert_csv_to_geojson.py. LLM JSON uses is_hwc_event (CSV column name, shared with HWC pipeline) as the boolean 'include this article' flag.",
     "related_scripts": [
       "scripts/gdelt-fetch-urls.py",
       "scripts/gdelt-enrich-urls.py",
@@ -40,8 +40,8 @@
     "fetch_end_date": "2026-03-31",
     "_comment_fetch_dates": "Inclusive DOC API window; same convention as meta/hwc_india_conflict_meta.json. Omit fetch_end_date or use empty string for 'through today' (UTC date).",
     "window_months": 3,
-    "summary_banner": "GDELT Wild Bird Mortality Feasibility Check — India",
-    "summary_title": "GDELT Wild Bird Mortality India — Feasibility Summary"
+    "summary_banner": "GDELT Avian Influenza / Bird Mortality — India",
+    "summary_title": "GDELT Avian Influenza India — Feasibility Summary"
   },
 
   "bigquery_gkg_fetch": {
@@ -69,7 +69,7 @@
   },
 
   "gkg_theme_sets": {
-    "_comment_design": "PRIMARY set = wildlife/bird domain signal. SECONDARY set = disease/pathogen/mortality signal. The two sets are strictly mutually exclusive — no theme appears in both. Score 3 (both sets match) = high-confidence article about wild bird disease mortality, not merely a poultry industry or human health article.",
+    "_comment_design": "PRIMARY set = wildlife/bird domain signal. SECONDARY set = disease/pathogen/mortality signal. The two sets are strictly mutually exclusive — no theme appears in both. Score 3 (both sets match) = high-confidence article about bird disease or mortality at the wildlife–disease interface; the LLM then classifies wild vs domestic vs human using event_type.",
 
     "primary_themes": [
       "ENV_WILDLIFE",
@@ -95,8 +95,8 @@
     "theme_score_guide": {
       "0": "No wildlife or disease theme matched — likely unrelated article",
       "1": "Wildlife theme only — may be conservation, migration, or birdwatching article without mortality",
-      "2": "Disease/mortality theme only — may be human health, poultry industry, or livestock article without wild bird focus",
-      "3": "Both wildlife AND disease/mortality themes matched — high-confidence wild bird mortality or avian disease event"
+      "2": "Disease/mortality theme only — may be human health, poultry industry, or livestock article",
+      "3": "Both wildlife AND disease/mortality themes matched — high-confidence bird disease / mortality context (LLM assigns event_type: wild poultry, domestic, mixed, or human)"
     },
 
     "_design_notes_themes": {
@@ -118,7 +118,7 @@
         "DISEASE_OUTBREAK fires on human disease outbreaks (cholera, dengue) — the primary wildlife set gates this to wildlife context",
         "WB_1051_INFLUENZA fires on human seasonal flu articles — primary wildlife gate prevents score-3 on those",
         "KILL fires on any killing event including HWC attacks — primary wildlife + secondary disease together prevent false matches",
-        "Poultry industry culling articles (domestic chicken/turkey) will score 3 — LLM gate (is_wild_bird_mortality_event) must explicitly reject 'only domestic/farm poultry, no wild birds mentioned'"
+        "Poultry-only or human-only articles may still score 3 with secondary themes — LLM gate (is_hwc_event + event_type) classifies ai_domestic_poultry, human_bird_flu, etc.; reject pure policy/price pieces with no concrete India outbreak or case"
       ],
       "india_domain_notes": [
         "India lies at the heart of the Central Asian Flyway (CAF) spanning 30 countries — 182 migratory waterbird species use Indian wetlands",
@@ -139,14 +139,14 @@
 
   "llm_extraction": {
     "system_prompt_lines": [
-      "You are a meticulous wildlife disease surveillance analyst specialising in India.",
-      "Your task is to analyse Indian news articles and extract structured data about",
-      "wild bird mass mortality events that may indicate avian influenza or other",
-      "epizootic disease outbreaks. You must respond ONLY with a single clean",
-      "JSON object — no markdown, no explanations, nothing outside the JSON."
+      "You are a meticulous One Health disease surveillance analyst specialising in India.",
+      "Your task is to analyse Indian news articles and extract structured data about avian influenza,",
+      "bird mortality (wild or domestic), and human cases of bird flu when reported in India.",
+      "You must respond ONLY with a single clean JSON object — no markdown, no explanations, nothing outside the JSON.",
+      "Field is_hwc_event is the pipeline boolean (true = article is in scope for this domain); it does not mean human–wildlife conflict."
     ],
     "extraction_prompt_lines": [
-      "Analyse this news article and extract wild bird mortality event data.",
+      "Analyse this news article and extract avian influenza / bird mortality data for India.",
       "",
       "Publication date: {pub_date}",
       "URL: {url}",
@@ -157,93 +157,65 @@
       "",
       "---",
       "",
-      "Follow these steps carefully:",
+      "STEP 1 — Is this article IN SCOPE (is_hwc_event = true)?",
+      "Set is_hwc_event = true if the article reports a concrete, India-relevant story about ANY of:",
+      "  - Avian influenza or suspected bird flu in WILD or FREE-LIVING birds (wetlands, sanctuaries, crows/herons in cities, etc.)",
+      "  - Avian influenza, HPAI, or mass mortality in DOMESTIC or FARM poultry, ducks, or backyard birds",
+      "  - Mixed reports (wild + poultry interface, culling near wetlands, same outbreak affecting both)",
+      "  - Human infection with avian influenza / H5N1 / HPAI (lab-confirmed or reported cases) in India",
+      "  - Mass mortality of birds where avian disease (AI or Newcastle, etc.) is suspected or confirmed",
       "",
-      "STEP 1 — Is this an actual wild bird mortality event?",
-      "A wild bird mortality event is a specific, real incident that has already occurred involving:",
-      "  - Multiple wild (non-farm) birds found dead or dying in one location",
-      "  - A confirmed or suspected disease outbreak in wild birds (avian influenza, Newcastle disease, etc.)",
-      "  - Wild bird samples testing positive for HPAI, H5N1, H5N8, H9N2 or other avian influenza subtypes",
-      "  - Mass die-offs of migratory waterbirds, raptors, corvids, or shorebirds",
-      "  - Wild birds dying in wetlands, sanctuaries, lakes, reservoirs, or open fields",
+      "Set is_hwc_event = false (and use event_type not_applicable) for:",
+      "  - Generic policy, vaccine stockpiling, or preparedness with NO specific outbreak, cases, or mortality",
+      "  - Pure egg/poultry commodity prices or export trade with NO disease event",
+      "  - Research-only or conference abstracts with NO news event",
+      "  - Distant foreign outbreaks with no India angle",
+      "  - Single pet bird with no outbreak context",
       "",
-      "NOT a wild bird mortality event — output 'no event' JSON and stop:",
-      "  - Only domestic/farm poultry deaths with no wild birds mentioned",
-      "  - General avian influenza policy, vaccine, or preparedness discussions",
-      "  - Human bird flu cases without accompanying wild bird mortality",
-      "  - Egg/poultry price articles or trade/export news",
-      "  - Research papers or academic conference reports",
-      "  - Warnings or advisories about possible future outbreaks",
-      "  - Culling of domestic poultry as a precautionary measure only",
-      "  - Single isolated bird death without mass mortality context",
+      "STEP 2 — event_type (host / case category)",
+      "Choose exactly ONE value for event_type:",
+      "  - ai_wild_birds — avian influenza or mass wild-bird mortality primarily in wild/free-living birds",
+      "  - ai_domestic_poultry — outbreak/mortality primarily in farm, commercial, or backyard poultry",
+      "  - ai_mixed_wild_domestic — article clearly ties wild and domestic birds in the same incident or wave",
+      "  - human_bird_flu — human H5N1 / avian influenza infection or death (primary story may be human; still set is_hwc_event true)",
+      "  - other_avian_disease — Newcastle or other avian disease, not specifically AI",
+      "  - non_ai_mortality — mass bird deaths not attributed to avian influenza (e.g. poisoning) but still a real mortality event",
+      "  - not_applicable — use only when is_hwc_event is false",
       "",
-      "If NOT a wild bird mortality event → output the 'no event' JSON (see format below) and stop.",
+      "STEP 3 — Other fields (when is_hwc_event is true)",
+      "  - species: primary species or host (e.g. bar-headed goose, chicken, crow, human, mixed). Lowercase.",
+      "  - victims: optional counts — humans_killed, humans_injured, animals_killed, animals_injured (use integers or null).",
+      "    For birds, put bird death toll in animals_killed when a number is given.",
+      "  - event_date: YYYY-MM-DD for the main event or first report; null if unknown.",
+      "  - primary_location: most specific place in India — wetland, farm area, district, or hospital district for human cases.",
+      "    Format: 'Place, District, State, India' or null.",
+      "  - location_type: wetland_named, sanctuary_named, village, town, district, state, unknown",
+      "  - location_notes: labs (e.g. NIHSAD), strain (H5N1), counts — max 200 chars.",
+      "  - extraction_notes: pathogen subtype, wild vs farm nuance, human case details — max 200 chars.",
+      "  - confidence: high, medium, low",
       "",
-      "STEP 2 — Extract event details (only if Step 1 = true)",
-      "  a) suspected_cause: most likely cause based on article. Use one of:",
-      "     avian_influenza_confirmed, avian_influenza_suspected, newcastle_disease,",
-      "     unknown_disease, poisoning, collision_powerline, habitat_loss,",
-      "     weather_stress, other (specify)",
-      "  b) pathogen_subtype: specific strain if mentioned (e.g. H5N1, H5N8, H9N2, HPAI, LPAI).",
-      "     Use null if not mentioned.",
-      "  c) bird_species: primary species affected. Use common name, lowercase.",
-      "     Examples: bar-headed goose, ruddy shelduck, common teal, northern pintail,",
-      "     great cormorant, pelican, crane, crow, heron, flamingo, eagle, unknown, mixed",
-      "  d) bird_type: broad category.",
-      "     Options: migratory_waterbird, resident_waterbird, raptor, corvid,",
-      "               shorebird, seabird, gamebird, mixed, unknown",
-      "  e) birds_dead_count: numeric count of dead birds mentioned, or null.",
-      "  f) birds_sick_count: numeric count of sick/dying birds mentioned, or null.",
-      "  g) habitat_type: where the event occurred.",
-      "     Options: wetland_lake, wetland_reservoir, wetland_river, sanctuary_wildlife,",
-      "               sanctuary_bird, open_field, forest, coastal, urban, poultry_adjacent, unknown",
-      "  h) flyway: migratory flyway context if mentioned.",
-      "     Options: central_asian_flyway, east_atlantic_flyway, east_asian_flyway, none_mentioned",
-      "  i) response_action: what authorities did (if mentioned).",
-      "     Options: samples_collected, confirmed_positive, culling_nearby_poultry,",
-      "               area_cordoned, alert_issued, no_action_mentioned, multiple",
-      "  j) human_cases_mentioned: were any human bird flu cases mentioned alongside this event?",
-      "     true or false",
-      "  k) event_date: date the mortality was first reported or occurred.",
-      "     Format YYYY-MM-DD. Use publication date if only 'recently' or similar. Null if unknown.",
-      "  l) primary_location: single most specific place name where the mortality occurred.",
-      "     Prefer wetland/sanctuary name > village/town > district.",
-      "     Write as 'Place, District, State, India'.",
-      "     Example: 'Pong Dam Lake, Kangra, Himachal Pradesh, India'",
-      "     Use null if no specific location mentioned.",
-      "  m) location_type: how specific is primary_location?",
-      "     Options: wetland_named, sanctuary_named, village, town, district, state, unknown",
-      "  n) location_notes: additional context — other affected sites, river/lake name,",
-      "     range of spread, testing lab mentioned. Max 150 chars.",
-      "  o) confidence: your overall confidence in the extraction.",
-      "     Options: high, medium, low",
+      "STEP 4 — GDELT location match",
+      "  Compare primary_location to GDELT candidate locations above; copy the best match string to gdelt_location_match, or null.",
       "",
-      "STEP 3 — Location reconciliation",
-      "  Compare primary_location against the GDELT candidate locations provided above.",
-      "  If one matches (same place, same or coarser specificity), record it.",
-      "  If none match, record null.",
-      "",
-      "Output format (always return exactly this JSON structure):",
+      "Output format (always return exactly this JSON structure). Use null where unknown:",
       "",
       "{{",
-      "  \"is_wild_bird_mortality_event\": true or false,",
-      "  \"suspected_cause\": \"...\",",
-      "  \"pathogen_subtype\": null,",
-      "  \"bird_species\": \"...\",",
-      "  \"bird_type\": \"...\",",
-      "  \"birds_dead_count\": null,",
-      "  \"birds_sick_count\": null,",
-      "  \"habitat_type\": \"...\",",
-      "  \"flyway\": \"...\",",
-      "  \"response_action\": \"...\",",
-      "  \"human_cases_mentioned\": false,",
-      "  \"event_date\": \"YYYY-MM-DD or null\",",
-      "  \"primary_location\": \"Place, District, State, India or null\",",
-      "  \"location_type\": \"...\",",
-      "  \"location_notes\": \"...\",",
-      "  \"gdelt_location_match\": \"matched GDELT location or null\",",
-      "  \"confidence\": \"high/medium/low\",",
-      "  \"extraction_notes\": \"any caveats or uncertainties, max 150 chars\"",
+      "  \"is_hwc_event\": true or false,",
+      "  \"event_type\": \"ai_wild_birds | ai_domestic_poultry | ai_mixed_wild_domestic | human_bird_flu | other_avian_disease | non_ai_mortality | not_applicable\",",
+      "  \"species\": null,",
+      "  \"victims\": {{",
+      "    \"humans_killed\": null,",
+      "    \"humans_injured\": null,",
+      "    \"animals_killed\": null,",
+      "    \"animals_injured\": null",
+      "  }},",
+      "  \"event_date\": null,",
+      "  \"primary_location\": null,",
+      "  \"location_type\": \"wetland_named\",",
+      "  \"location_notes\": \"\",",
+      "  \"gdelt_location_match\": null,",
+      "  \"confidence\": \"high\",",
+      "  \"extraction_notes\": \"\"",
       "}}"
     ],
     "extraction_prompt_placeholders": [
@@ -252,14 +224,14 @@
       "gdelt_locations",
       "article_text"
     ],
-    "notes": "extraction_prompt_lines is joined with newlines then formatted with .format(**kwargs). Literal braces in the JSON example use doubled {{ }} in the joined string."
+    "notes": "extraction_prompt_lines is joined with newlines then formatted with .format(**kwargs). Literal braces in the JSON example use doubled {{ }} in the joined string. Pipeline gdelt-get-full-text.py maps is_hwc_event, species, event_type, victims.* to CSV columns."
   },
 
   "data_binding": {
     "input_formats": ["final_report_csv"],
     "final_report_csv": {
       "filter_hwc_events": {
-        "column": "is_wild_bird_mortality_event",
+        "column": "is_hwc_event",
         "true_values": ["true", "True", "TRUE", "1"]
       },
       "geometry": {
@@ -271,16 +243,8 @@
         "url",
         "title",
         "pub_date",
-        "suspected_cause",
-        "pathogen_subtype",
-        "bird_species",
-        "bird_type",
-        "birds_dead_count",
-        "birds_sick_count",
-        "habitat_type",
-        "flyway",
-        "response_action",
-        "human_cases_mentioned",
+        "species",
+        "event_type",
         "event_date",
         "primary_location",
         "location_type",
@@ -288,6 +252,11 @@
         "geocode_source",
         "location_notes",
         "gdelt_location_match",
+        "humans_killed",
+        "humans_injured",
+        "animals_killed",
+        "animals_injured",
+        "extraction_notes",
         "fetch_method"
       ]
     }
@@ -295,21 +264,19 @@
 
   "taxonomy": {
     "event_type": {
-      "description": "Primary suspected cause from LLM extraction (suspected_cause field).",
+      "description": "Primary category from LLM (maps to CSV event_type). Distinguishes wild vs domestic AI vs human cases.",
       "allowed_values": [
-        "avian_influenza_confirmed",
-        "avian_influenza_suspected",
-        "newcastle_disease",
-        "unknown_disease",
-        "poisoning",
-        "collision_powerline",
-        "habitat_loss",
-        "weather_stress",
-        "other"
+        "ai_wild_birds",
+        "ai_domestic_poultry",
+        "ai_mixed_wild_domestic",
+        "human_bird_flu",
+        "other_avian_disease",
+        "non_ai_mortality",
+        "not_applicable"
       ]
     },
     "bird_type": {
-      "description": "Broad taxonomic/ecological category of affected birds.",
+      "description": "Legacy ecological category; optional detail may appear in extraction_notes.",
       "allowed_values": [
         "migratory_waterbird",
         "resident_waterbird",
@@ -323,7 +290,7 @@
       ]
     },
     "habitat_type": {
-      "description": "Habitat where mortality was found.",
+      "description": "Habitat where mortality was found (optional nuance in extraction_notes).",
       "allowed_values": [
         "wetland_lake",
         "wetland_reservoir",
@@ -367,43 +334,45 @@
 
   "map_style": {
     "category_field": "map_category",
-    "description": "map_category computed from suspected_cause: merged groups below, else raw suspected_cause, else unknown.",
+    "description": "map_category from event_type via merge_groups below.",
     "merge_groups": [
       {
-        "id": "avian_influenza",
-        "label": "Avian influenza (confirmed or suspected)",
-        "event_types": [
-          "avian_influenza_confirmed",
-          "avian_influenza_suspected"
-        ]
+        "id": "ai_wild",
+        "label": "AI — wild birds",
+        "event_types": ["ai_wild_birds"]
+      },
+      {
+        "id": "ai_domestic",
+        "label": "AI — domestic poultry",
+        "event_types": ["ai_domestic_poultry"]
+      },
+      {
+        "id": "ai_mixed",
+        "label": "AI — wild + domestic",
+        "event_types": ["ai_mixed_wild_domestic"]
+      },
+      {
+        "id": "human_h5",
+        "label": "Human bird flu",
+        "event_types": ["human_bird_flu"]
       },
       {
         "id": "other_disease",
-        "label": "Other or unknown disease",
-        "event_types": [
-          "newcastle_disease",
-          "unknown_disease"
-        ]
-      },
-      {
-        "id": "non_disease",
-        "label": "Non-disease cause (poisoning, collision, stress)",
-        "event_types": [
-          "poisoning",
-          "collision_powerline",
-          "habitat_loss",
-          "weather_stress"
-        ]
+        "label": "Other avian disease / non-AI mortality",
+        "event_types": ["other_avian_disease", "non_ai_mortality"]
       }
     ],
-    "singleton_event_types": ["other"],
+    "singleton_event_types": ["not_applicable"],
     "fallback_category": "other",
     "colors_hex": {
-      "avian_influenza": "#d73027",
-      "other_disease":   "#fc8d59",
-      "non_disease":     "#4575b4",
-      "other":           "#737373",
-      "unknown":         "#bdbdbd"
+      "ai_wild": "#1a9850",
+      "ai_domestic": "#f46d43",
+      "ai_mixed": "#762a83",
+      "human_h5": "#d73027",
+      "other_disease": "#fc8d59",
+      "not_applicable": "#bdbdbd",
+      "other": "#737373",
+      "unknown": "#bdbdbd"
     }
   },
 

@@ -9,6 +9,15 @@ Tests the full extraction pipeline on a sample of articles:
   5. Fall back to GDELT district coords when geocoding fails
   6. Save results + a quality report
 
+Article text cache (incremental runs)
+--------------------------------------
+  Fetched bodies are written under ``data/{prefix}_article_text/`` as ``{event_id}.txt`` and
+  ``{event_id}.meta.json`` (``fetch_method``: jina, trafilatura, or selenium). Override directory
+  with ``GDELT_ARTICLE_TEXT_DIR`` or ``--article-text-dir``.
+
+  - Default: if a cache file exists for an event, it is reused unless ``--force-fetch``.
+  - ``--llm-only``: never hits the network for article text; only cached files are sent to the LLM.
+
 Requirements:
     pip install trafilatura requests pandas tqdm
     pip install selenium   # optional — for --retry-failed-from
@@ -33,11 +42,15 @@ Two-run workflow
 ----------------
   1) First run (no --retry-failed-from): reads --input (default data/hwc_urls_geocoded.csv)
      — URL, title, GDELT fields; no fetch_method column. Writes data/hwc_final_report.csv
-     incrementally (one row appended after each article is processed).
+     incrementally (one row appended after each article is processed). Fetched article bodies
+     are also saved under data/{prefix}_article_text/ (see --article-text-dir).
   2) Second run: pass --retry-failed-from (default file: data/hwc_final_report.csv if you use
      the flag alone). Loads the previous run CSV (has fetch_method), retries only failed
      URLs with Selenium, leaves successful rows unchanged, rewrites the merged CSV after each
-     retry so progress is not lost on crash.
+     retry so progress is not lost on crash. Successful Selenium extractions are saved to the
+     same article-text directory.
+  3) Incremental LLM-only: after a fetch run, you can re-run with --llm-only to send cached
+     .txt files to Ollama without any article HTTP fetch.
 
 Usage:
     python scripts/gdelt-get-full-text.py --sample 50
@@ -45,7 +58,8 @@ Usage:
     python scripts/gdelt-get-full-text.py --retry-failed-from
     python scripts/gdelt-get-full-text.py --retry-failed-from data/hwc_final_report.csv --output data/hwc_final_report_updated.csv
     python scripts/gdelt-get-full-text.py --retry-failed-from --proxy-server http://proxy.example.com:8080
-    python scripts/gdelt-get-full-text.py --sample 100 --fetch-workers 4 --parallel-jina
+    python scripts/gdelt-get-full-text.py --sample 100 --fetch-workers 4
+    python scripts/gdelt-get-full-text.py --llm-only
     python scripts/gdelt-get-full-text.py --retry-failed-from --selenium-workers 2
 """
 
@@ -72,6 +86,7 @@ if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 from domain_meta import get_gkg_theme_sets, get_llm_prompts, load_domain_meta  # noqa: E402
 from domain_paths import (  # noqa: E402
+    article_text_dir,
     ensure_event_id_column,
     final_report_csv,
     final_report_txt,
@@ -96,25 +111,6 @@ def _env_int(key: str, default: int) -> int:
         return int(str(raw).strip())
     except ValueError:
         return default
-
-
-def _env_gdelt_parallel_jina_enabled() -> bool:
-    v = os.environ.get("GDELT_PARALLEL_JINA", "").strip().lower()
-    return v in ("1", "true", "yes", "on")
-
-
-def _warn_if_gdelt_parallel_jina_unrecognized() -> None:
-    raw = os.environ.get("GDELT_PARALLEL_JINA", "").strip()
-    if not raw:
-        return
-    v = raw.lower()
-    if v in ("1", "true", "yes", "on", "0", "false", "no", "off"):
-        return
-    print(
-        "\n  Note: GDELT_PARALLEL_JINA must be 1/true/yes/on to enable parallel Jina "
-        f"(or 0/false/no/off to disable). Got {raw!r}; treating as off.\n",
-        flush=True,
-    )
 
 
 OLLAMA_BASE_URL = (os.environ.get("OLLAMA_BASE_URL") or "http://127.0.0.1:11434").strip()
@@ -250,12 +246,59 @@ def append_incremental_final_report_row(
         csv.writer(f).writerow(vals)
 
 
+_EVENT_ID_INVALID_FS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def _sanitize_event_id_for_path(event_id: str) -> str:
+    s = (event_id or "").strip() or "unknown"
+    s = _EVENT_ID_INVALID_FS.sub("_", s)
+    return s[:200] if len(s) > 200 else s
+
+
+def _article_text_cache_paths(cache_dir: Path, event_id: str) -> tuple[Path, Path]:
+    safe = _sanitize_event_id_for_path(event_id)
+    return cache_dir / f"{safe}.txt", cache_dir / f"{safe}.meta.json"
+
+
+def save_article_text_cache(
+    cache_dir: Path, event_id: str, text: str, fetch_method: str
+) -> None:
+    """Write ``{event_id}.txt`` and a small ``{event_id}.meta.json`` (fetch_method)."""
+    txt_path, meta_path = _article_text_cache_paths(cache_dir, event_id)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    txt_path.write_text(text, encoding="utf-8")
+    meta_path.write_text(
+        json.dumps({"fetch_method": fetch_method}, ensure_ascii=False, indent=0) + "\n",
+        encoding="utf-8",
+    )
+
+
+def load_article_text_cache(
+    cache_dir: Path, event_id: str,
+) -> tuple[str | None, str | None]:
+    """Return ``(text, fetch_method)`` from disk cache, or ``(None, None)`` if missing."""
+    txt_path, meta_path = _article_text_cache_paths(cache_dir, event_id)
+    if not txt_path.is_file():
+        return None, None
+    raw = txt_path.read_text(encoding="utf-8")
+    if not (raw or "").strip():
+        return None, None
+    method = None
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            method = meta.get("fetch_method")
+        except (json.JSONDecodeError, OSError):
+            pass
+    return raw.strip(), (str(method).strip() if method else None) or "cached"
+
+
 # LLM system/user prompts: loaded from meta JSON (llm_extraction), see --meta.
 
 # ── Article fetching ──────────────────────────────────────────────────────────
 
 _requests_tls = threading.local()
-# trafilatura uses shared download/urllib state; concurrent fetch_url can deadlock — serialize.
+# Serialize trafilatura on the main thread; parallel workers call extract with parallel=True (no lock).
 _trafilatura_lock = threading.Lock()
 
 
@@ -291,34 +334,40 @@ def fetch_via_jina(url: str, timeout: int = 20) -> str | None:
         return None
 
 
-def fetch_via_trafilatura(url: str) -> str | None:
+def fetch_via_trafilatura(url: str, *, parallel: bool = False) -> str | None:
     """Fall back to trafilatura: bounded ``requests.get`` then ``trafilatura.extract`` (not ``fetch_url``)."""
     _read = float(max(5, TRAFILATURA_DOWNLOAD_TIMEOUT_SEC))
     _conn = min(15.0, _read)
-    try:
-        with _trafilatura_lock:
-            resp = requests.get(
-                url,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (compatible; gdelt-wildlife/1.0; "
-                        "+https://github.com/adbar/trafilatura)"
-                    ),
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                },
-                timeout=(_conn, _read),
-            )
-            if resp.status_code != 200 or not (resp.text or "").strip():
-                return None
-            downloaded = resp.text
-            text = trafilatura.extract(
-                downloaded,
-                include_comments=False,
-                include_tables=False,
-            )
-            if text and len(text.strip()) > 200:
-                return text.strip()
+
+    def _download_and_extract() -> str | None:
+        resp = requests.get(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (compatible; gdelt-wildlife/1.0; "
+                    "+https://github.com/adbar/trafilatura)"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+            timeout=(_conn, _read),
+        )
+        if resp.status_code != 200 or not (resp.text or "").strip():
+            return None
+        downloaded = resp.text
+        text = trafilatura.extract(
+            downloaded,
+            include_comments=False,
+            include_tables=False,
+        )
+        if text and len(text.strip()) > 200:
+            return text.strip()
         return None
+
+    try:
+        if parallel:
+            return _download_and_extract()
+        with _trafilatura_lock:
+            return _download_and_extract()
     except Exception as e:
         _fetch_error_line(f"Error fetching {url} via trafilatura: {e}")
         return None
@@ -791,6 +840,7 @@ def _selenium_retry_one_index(
     extraction_prompt: str,
     i_display: int,
     n_total: int,
+    article_text_cache_dir: Path,
 ) -> tuple[int, int]:
     """
     Process one failed row with Selenium + LLM. Returns (n_ok_delta, n_bad_delta).
@@ -858,6 +908,10 @@ def _selenium_retry_one_index(
 
     log.debug("  pipeline: process_fetched_article (chars=%s)", len(article_text))
     eid = str(row.get("event_id", "") or "").strip()
+    try:
+        save_article_text_cache(article_text_cache_dir, eid, article_text, "selenium")
+    except OSError as e:
+        log.debug("  could not save article text cache: %s", e)
     out = process_fetched_article(
         url=url,
         title=title,
@@ -917,6 +971,7 @@ def retry_failed_pilot_results(
     *,
     system_prompt: str,
     extraction_prompt: str,
+    article_text_cache_dir: Path | None = None,
 ):
     """
     Read data/hwc_final_report.csv; for rows with fetch_method=failed, load page with
@@ -940,8 +995,10 @@ def retry_failed_pilot_results(
     df = pd.read_csv(pilot_csv, dtype=object)
     df = ensure_event_id_column(df)
     _rp = Path(pilot_csv).resolve()
+    _root = _rp.parent.parent
     _pfx = prefix_from_report_csv(_rp)
-    geo_path = urls_geocoded_csv(_rp.parent.parent, _pfx)
+    _atc = article_text_cache_dir or article_text_dir(_root, _pfx)
+    geo_path = urls_geocoded_csv(_root, _pfx)
     if geo_path.exists():
         try:
             g = pd.read_csv(geo_path, dtype=object)
@@ -1011,6 +1068,7 @@ def retry_failed_pilot_results(
                     extraction_prompt,
                     i,
                     len(to_process),
+                    _atc,
                 )
                 n_ok += o
                 n_still_bad += b
@@ -1045,6 +1103,7 @@ def retry_failed_pilot_results(
                         extraction_prompt,
                         j,
                         len(chunk),
+                        _atc,
                     )
                     n_ok_l += o
                     n_bad_l += b
@@ -1089,7 +1148,9 @@ def main(
     system_prompt: str,
     extraction_prompt: str,
     theme_hc_min: int,
-    parallel_jina: bool = False,
+    article_text_cache_dir: Path,
+    force_fetch: bool = False,
+    llm_only: bool = False,
 ):
     global _parallel_fetch_in_progress
 
@@ -1136,9 +1197,16 @@ def main(
             print(f"  → Sampled {len(sample)} articles (random)")
 
     stats = {
-        "fetch_jina": 0, "fetch_trafilatura": 0, "fetch_failed": 0,
-        "is_hwc": 0, "not_hwc": 0, "extract_error": 0,
-        "geocoded_claude": 0, "geocoded_gdelt_fallback": 0, "no_geocode": 0,
+        "fetch_jina": 0,
+        "fetch_trafilatura": 0,
+        "fetch_failed": 0,
+        "fetch_cached": 0,
+        "is_hwc": 0,
+        "not_hwc": 0,
+        "extract_error": 0,
+        "geocoded_claude": 0,
+        "geocoded_gdelt_fallback": 0,
+        "no_geocode": 0,
     }
 
     if len(sample) == 0:
@@ -1162,102 +1230,162 @@ def main(
     n_sample = len(sample)
     use_tqdm = not verbose
     row_items = list(sample.iterrows())
+    urls = [str(row.get("url", "")) for _, row in row_items]
 
-    # Parallel Jina is opt-in: ThreadPoolExecutor + HTTP has hung on some Windows/Linux setups.
-    _warn_if_gdelt_parallel_jina_unrecognized()
-    use_parallel_jina = fetch_workers > 1 and (
-        _env_gdelt_parallel_jina_enabled() or parallel_jina
+    use_parallel_fetch = fetch_workers > 1 and not llm_only
+    fetch_results: list | None = None
+    cache_hit = [False] * n_sample
+
+    print(
+        f"\nProcessing {n_sample} articles (writing each row to {output_csv})...\n"
+        f"  Article text cache: {article_text_cache_dir}\n",
+        flush=True,
     )
-    if fetch_workers > 1 and not use_parallel_jina:
+    if llm_only:
         print(
-            "\n  Note: --fetch-workers > 1 is ignored unless --parallel-jina or "
-            "GDELT_PARALLEL_JINA=1/true/yes/on "
-            "(parallel Jina has hung on some setups). Using sequential fetch.\n",
+            "  Mode: --llm-only (no network fetch; cached text only).\n",
             flush=True,
         )
-
-    if use_parallel_jina:
-        urls = [str(row.get("url", "")) for _, row in row_items]
-        _parallel_src = []
-        if parallel_jina:
-            _parallel_src.append("--parallel-jina")
-        if _env_gdelt_parallel_jina_enabled():
-            _parallel_src.append("GDELT_PARALLEL_JINA")
+    elif use_parallel_fetch:
         print(
-            f"\nProcessing {n_sample} articles (writing each row to {output_csv})...\n"
-            f"  Fetch: {fetch_workers} parallel workers for Jina only; trafilatura fallback runs "
-            "sequentially on the main thread (avoids thread-safety issues in trafilatura/urllib).\n"
-            f"  Parallel Jina enabled by: {', '.join(_parallel_src)}\n"
+            f"  Fetch: {fetch_workers} parallel workers for Jina, then trafilatura fallback "
+            f"in parallel for rows that still need text.\n"
             "  Then sequential LLM + geocode per row.\n",
             flush=True,
         )
-        # Phase 1: parallel Jina only (threads). Phase 2: trafilatura only on main thread.
-        _jina_wait_timeout = max(1, int(FETCH_FUTURE_TIMEOUT_SEC))
+
+    if llm_only:
+        fetch_results = []
+        for i in range(n_sample):
+            eid = str(row_items[i][1].get("event_id", "") or "").strip()
+            t, m = load_article_text_cache(article_text_cache_dir, eid)
+            if t:
+                fetch_results.append((t, m))
+                cache_hit[i] = True
+            else:
+                fetch_results.append((None, "failed"))
+    elif use_parallel_fetch:
+        fetch_results = [None] * n_sample
+        if not force_fetch:
+            for i in range(n_sample):
+                eid = str(row_items[i][1].get("event_id", "") or "").strip()
+                t, m = load_article_text_cache(article_text_cache_dir, eid)
+                if t:
+                    fetch_results[i] = (t, m)
+                    cache_hit[i] = True
+
+        need_jina = [i for i in range(n_sample) if fetch_results[i] is None]
         jina_text = [None] * n_sample
-        _parallel_fetch_in_progress = True
-        try:
-            # Manual shutdown(wait=False): the context manager uses shutdown(wait=True), which
-            # joins all worker threads. After a wait-timeout we cancel futures, but running
-            # fetch_via_jina (requests.get) keeps going — those threads would block __exit__ forever.
-            ex = ThreadPoolExecutor(max_workers=fetch_workers)
+        _jina_wait_timeout = max(1, int(FETCH_FUTURE_TIMEOUT_SEC))
+        if need_jina:
+            _parallel_fetch_in_progress = True
             try:
-                future_to_idx = {}
-                next_submit = 0
-                while next_submit < n_sample or future_to_idx:
-                    while len(future_to_idx) < fetch_workers and next_submit < n_sample:
-                        fut = ex.submit(fetch_via_jina, urls[next_submit])
-                        future_to_idx[fut] = next_submit
-                        next_submit += 1
-                    if not future_to_idx:
-                        break
-                    done, _ = wait(
-                        set(future_to_idx.keys()),
-                        return_when=FIRST_COMPLETED,
-                        timeout=_jina_wait_timeout,
-                    )
-                    if not done:
-                        for fut in list(future_to_idx.keys()):
-                            idx = future_to_idx.pop(fut)
-                            jina_text[idx] = None
-                            fut.cancel()
-                        _fetch_error_line(
-                            f"[fetch] No Jina request finished within {_jina_wait_timeout}s; "
-                            "abandoning in-flight request(s); trafilatura will be tried on the main thread."
+                ex = ThreadPoolExecutor(max_workers=fetch_workers)
+                try:
+                    future_to_idx = {}
+                    next_submit = 0
+                    nj = len(need_jina)
+                    while next_submit < nj or future_to_idx:
+                        while len(future_to_idx) < fetch_workers and next_submit < nj:
+                            idx = need_jina[next_submit]
+                            fut = ex.submit(fetch_via_jina, urls[idx])
+                            future_to_idx[fut] = idx
+                            next_submit += 1
+                        if not future_to_idx:
+                            break
+                        done, _ = wait(
+                            set(future_to_idx.keys()),
+                            return_when=FIRST_COMPLETED,
+                            timeout=_jina_wait_timeout,
                         )
-                        continue
-                    for fut in done:
-                        idx = future_to_idx.pop(fut)
-                        jina_text[idx] = fut.result()
+                        if not done:
+                            for fut in list(future_to_idx.keys()):
+                                idx = future_to_idx.pop(fut)
+                                jina_text[idx] = None
+                                fut.cancel()
+                            _fetch_error_line(
+                                f"[fetch] No Jina request finished within {_jina_wait_timeout}s; "
+                                "abandoning in-flight request(s); trafilatura will be tried next."
+                            )
+                            continue
+                        for fut in done:
+                            idx = future_to_idx.pop(fut)
+                            jina_text[idx] = fut.result()
+                finally:
+                    ex.shutdown(wait=False, cancel_futures=True)
             finally:
-                ex.shutdown(wait=False, cancel_futures=True)
-        finally:
-            _parallel_fetch_in_progress = False
+                _parallel_fetch_in_progress = False
 
         print(
-            "  → Parallel Jina round complete; trafilatura fallback for rows without Jina text…",
+            "  → Jina round complete; trafilatura for rows without Jina text…",
             flush=True,
         )
-        fetch_results = [None] * n_sample
-        _tf_attempt = 0
+
+        need_tf: list[int] = []
         for i in range(n_sample):
+            if fetch_results[i] is not None:
+                continue
             if jina_text[i]:
                 fetch_results[i] = (jina_text[i], "jina")
             else:
-                _tf_attempt += 1
-                if _tf_attempt == 1 or _tf_attempt % 25 == 0:
-                    print(
-                        f"  … trafilatura attempt #{_tf_attempt} (article {i + 1}/{n_sample})",
-                        flush=True,
-                    )
-                time.sleep(0.5)
-                t = fetch_via_trafilatura(urls[i])
-                if t:
-                    fetch_results[i] = (t, "trafilatura")
-                else:
-                    fetch_results[i] = (None, "failed")
+                need_tf.append(i)
+
+        if need_tf:
+            _parallel_fetch_in_progress = True
+            try:
+                ex = ThreadPoolExecutor(max_workers=fetch_workers)
+                try:
+                    future_to_idx = {}
+                    next_submit = 0
+                    ntf = len(need_tf)
+                    while next_submit < ntf or future_to_idx:
+                        while len(future_to_idx) < fetch_workers and next_submit < ntf:
+                            idx = need_tf[next_submit]
+                            fut = ex.submit(fetch_via_trafilatura, urls[idx], parallel=True)
+                            future_to_idx[fut] = idx
+                            next_submit += 1
+                        if not future_to_idx:
+                            break
+                        done, _ = wait(
+                            set(future_to_idx.keys()),
+                            return_when=FIRST_COMPLETED,
+                            timeout=_jina_wait_timeout,
+                        )
+                        if not done:
+                            for fut in list(future_to_idx.keys()):
+                                idx = future_to_idx.pop(fut)
+                                fetch_results[idx] = (None, "failed")
+                                fut.cancel()
+                            _fetch_error_line(
+                                f"[fetch] No trafilatura request finished within {_jina_wait_timeout}s; "
+                                "abandoning in-flight request(s)."
+                            )
+                            continue
+                        for fut in done:
+                            idx = future_to_idx.pop(fut)
+                            t = fut.result()
+                            if t:
+                                fetch_results[idx] = (t, "trafilatura")
+                            else:
+                                fetch_results[idx] = (None, "failed")
+                finally:
+                    ex.shutdown(wait=False, cancel_futures=True)
+            finally:
+                _parallel_fetch_in_progress = False
+
+        for i in range(n_sample):
+            fr = fetch_results[i]
+            if fr and fr[0] and not cache_hit[i]:
+                eid = str(row_items[i][1].get("event_id", "") or "").strip()
+                save_article_text_cache(article_text_cache_dir, eid, fr[0], fr[1])
+
         print("  → Fetch phase complete; starting LLM + geocode…", flush=True)
     else:
-        print(f"\nProcessing {n_sample} articles (writing each row to {output_csv})...\n", flush=True)
+        if not llm_only:
+            print(
+                f"  Fetch: sequential Jina then trafilatura (use --fetch-workers > 1 for parallel).\n",
+                flush=True,
+            )
         fetch_results = None
 
     llm_bar = tqdm(
@@ -1300,11 +1428,26 @@ def main(
         log.debug("  [fetch] trying Jina then trafilatura…")
         if fetch_results is not None:
             article_text, fetch_method = fetch_results[seq]
+            if cache_hit[seq]:
+                stats["fetch_cached"] += 1
+            else:
+                stats[f"fetch_{fetch_method}"] += 1
         else:
-            article_text, fetch_method = fetch_article(url)
-            time.sleep(SLEEP_JINA)
+            article_text, fetch_method = None, "failed"
+            if not force_fetch:
+                t, m = load_article_text_cache(article_text_cache_dir, eid)
+                if t:
+                    article_text, fetch_method = t, m
+                    stats["fetch_cached"] += 1
+            if article_text is None:
+                article_text, fetch_method = fetch_article(url)
+                time.sleep(SLEEP_JINA)
+                if article_text:
+                    save_article_text_cache(
+                        article_text_cache_dir, eid, article_text, fetch_method
+                    )
+                stats[f"fetch_{fetch_method}"] += 1
         result_row["fetch_method"] = fetch_method
-        stats[f"fetch_{fetch_method}"] += 1
         log.debug(
             "  [fetch] result=%s chars=%s",
             fetch_method,
@@ -1312,13 +1455,18 @@ def main(
         )
 
         if not article_text:
+            _fe = (
+                "no cached article text (--llm-only)"
+                if llm_only
+                else "article fetch failed"
+            )
             result_row.update({
                 "is_hwc_event": None, "species": None, "event_type": None,
                 "event_date": None, "primary_location": None,
                 "location_type": None, "confidence": None,
                 "final_lat": gdelt_lat, "final_lon": gdelt_lon,
                 "geocode_source": "gdelt_fallback_no_text",
-                "_error": "article fetch failed",
+                "_error": _fe,
             })
             log.debug("  [fetch] FAILED → using gdelt_fallback_no_text if coords exist")
             append_incremental_final_report_row(
@@ -1356,7 +1504,9 @@ def main(
     # ── Quality report ─────────────────────────────────────────────────────
     hwc_df    = out_df[out_df["is_hwc_event"] == True]
     n_total   = len(out_df)
-    n_fetched = stats["fetch_jina"] + stats["fetch_trafilatura"]
+    n_fetched = (
+        stats["fetch_jina"] + stats["fetch_trafilatura"] + stats["fetch_cached"]
+    )
     n_hwc     = len(hwc_df)
 
     # Location precision breakdown
@@ -1380,6 +1530,7 @@ Sample size          : {n_total}
 Successfully fetched : {n_fetched} ({n_fetched/n_total*100:.0f}%)
   via Jina AI        : {stats['fetch_jina']}
   via trafilatura    : {stats['fetch_trafilatura']}
+  from disk cache    : {stats['fetch_cached']}
   failed             : {stats['fetch_failed']}
 
 Claude extraction
@@ -1502,15 +1653,28 @@ if __name__ == "__main__":
         default=1,
         metavar="N",
         help=(
-            "First run only: parallel threads for Jina only (trafilatura stays on the main thread). "
-            "Ignored unless --parallel-jina or GDELT_PARALLEL_JINA=1/true/yes/on "
-            "(default N is 1 = sequential Jina per URL). LLM and geocode run one row at a time."
+            "First run only: parallel threads for Jina and for trafilatura fallback (when N > 1). "
+            "Default 1 = sequential fetch per URL. LLM and geocode run one row at a time."
         ),
     )
     p.add_argument(
-        "--parallel-jina",
+        "--article-text-dir",
+        default=None,
+        metavar="DIR",
+        help=(
+            "Directory for per-event article text ({event_id}.txt + .meta.json). "
+            "Default: data/{prefix}_article_text/ or GDELT_ARTICLE_TEXT_DIR."
+        ),
+    )
+    p.add_argument(
+        "--force-fetch",
         action="store_true",
-        help="Enable parallel Jina fetch; use with --fetch-workers > 1 (same as GDELT_PARALLEL_JINA=1/true/yes/on).",
+        help="Ignore on-disk article text cache and fetch every URL again.",
+    )
+    p.add_argument(
+        "--llm-only",
+        action="store_true",
+        help="Do not fetch URLs; use only cached text under --article-text-dir (missing cache → failed row).",
     )
     p.add_argument(
         "--selenium-workers",
@@ -1525,12 +1689,17 @@ if __name__ == "__main__":
     args = p.parse_args()
     if args.fetch_workers < 1:
         p.error("--fetch-workers must be >= 1")
-    if args.parallel_jina and args.fetch_workers < 2:
-        p.error("--parallel-jina requires --fetch-workers >= 2")
+    if args.llm_only and args.force_fetch:
+        p.error("--llm-only and --force-fetch cannot be used together")
     if args.selenium_workers < 1:
         p.error("--selenium-workers must be >= 1")
 
     _pfx = output_prefix(args.meta)
+    if args.article_text_dir:
+        _atp = Path(args.article_text_dir)
+        _article_text_resolved = _atp if _atp.is_absolute() else (_root / _atp)
+    else:
+        _article_text_resolved = article_text_dir(_root, _pfx)
     if args.input is None:
         args.input = str(urls_geocoded_csv(_root, _pfx))
     if args.report is None:
@@ -1563,6 +1732,7 @@ if __name__ == "__main__":
             selenium_workers=args.selenium_workers,
             system_prompt=system_prompt,
             extraction_prompt=extraction_prompt,
+            article_text_cache_dir=_article_text_resolved,
         )
     else:
         main(
@@ -1578,5 +1748,7 @@ if __name__ == "__main__":
             system_prompt = system_prompt,
             extraction_prompt = extraction_prompt,
             theme_hc_min  = theme_hc_min,
-            parallel_jina = args.parallel_jina,
+            article_text_cache_dir = _article_text_resolved,
+            force_fetch   = args.force_fetch,
+            llm_only      = args.llm_only,
         )

@@ -5,6 +5,7 @@ Also deterministic event_id for rows missing UUIDs (migration / legacy CSVs).
 
 from __future__ import annotations
 
+import os
 import uuid
 from pathlib import Path
 
@@ -95,6 +96,18 @@ def final_report_updated_csv(root: Path, prefix: str) -> Path:
 
 def final_report_txt(root: Path, prefix: str) -> Path:
     return outputs_dir(root) / f"{prefix}_final_report.txt"
+
+
+def article_text_dir(root: Path, prefix: str) -> Path:
+    """
+    Per-event article body cache: ``{event_id}.txt`` plus optional ``{event_id}.meta.json``.
+    Override with env ``GDELT_ARTICLE_TEXT_DIR`` (absolute or relative to repo root).
+    """
+    raw = (os.environ.get("GDELT_ARTICLE_TEXT_DIR") or "").strip()
+    if raw:
+        p = Path(raw)
+        return p if p.is_absolute() else (root / p)
+    return data_dir(root) / f"{prefix}_article_text"
 
 
 def points_geojson(root: Path, prefix: str) -> Path:
