@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.2",
+  "schema_version": "1.3",
   "domain": {
     "id": "avian_influenza_surveillance_india",
     "title": "Avian influenza and bird mortality (India)",
@@ -198,6 +198,9 @@
       "  - location_type: wetland_named, sanctuary_named, village, town, district, state, unknown",
       "  - location_notes: labs (e.g. NIHSAD), strain (H5N1), counts — max 200 chars.",
       "  - extraction_notes: pathogen subtype, wild vs farm nuance, human case details — max 200 chars.",
+      "  - response_action: authority response if mentioned — one of taxonomy values:",
+      "    samples_collected, confirmed_positive, culling_nearby_poultry, area_cordoned,",
+      "    alert_issued, no_action_mentioned, multiple — or null.",
       "  - confidence: high, medium, low",
       "",
       "STEP 4 — GDELT location match",
@@ -222,6 +225,7 @@
       "  \"location_type\": \"wetland_named\",",
       "  \"location_notes\": \"\",",
       "  \"gdelt_location_match\": null,",
+      "  \"response_action\": null,",
       "  \"confidence\": \"high\",",
       "  \"extraction_notes\": \"\"",
       "}}"
@@ -265,6 +269,7 @@
         "animals_killed",
         "animals_injured",
         "extraction_notes",
+        "response_action",
         "bird_type",
         "habitat_type",
         "fetch_method"

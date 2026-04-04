@@ -198,6 +198,27 @@ def _pilot_scalar_for_csv(v):
     return str(v)
 
 
+def _csv_bool_true(v) -> bool:
+    """True for LLM/CSV booleans and common string forms (legacy rows)."""
+    if v is True:
+        return True
+    if v is False or v is None:
+        return False
+    s = str(v).strip().lower()
+    return s in ("true", "1", "yes", "on")
+
+
+def _normalized_event_flag(extracted: dict):
+    """
+    Pilot CSV column ``is_hwc_event`` doubles as the generic 'positive domain hit' flag:
+    HWC and avian use ``is_hwc_event`` from the LLM; crop uses ``is_crop_damage_event``.
+    """
+    ie = extracted.get("is_hwc_event")
+    if ie is not None:
+        return ie
+    return extracted.get("is_crop_damage_event")
+
+
 # Column order for first-run incremental CSV (matches process_fetched_article + fetch-fail rows)
 FINAL_REPORT_COLUMNS = (
     "event_id",
@@ -224,6 +245,15 @@ FINAL_REPORT_COLUMNS = (
     "gdelt_location_match",
     "confidence",
     "extraction_notes",
+    "response_action",
+    "is_crop_damage_event",
+    "damage_cause",
+    "crop_type",
+    "crop_season",
+    "damage_extent",
+    "area_affected_ha",
+    "farmers_affected",
+    "economic_loss_inr",
     "_error",
     "geocoded_address",
     "final_lat",
@@ -756,8 +786,9 @@ def process_fetched_article(
     )
     time.sleep(SLEEP_LLM)
 
+    norm_flag = _normalized_event_flag(extracted)
     result_row.update({
-        "is_hwc_event":        extracted.get("is_hwc_event"),
+        "is_hwc_event":        norm_flag,
         "species":             extracted.get("species"),
         "event_type":          extracted.get("event_type"),
         "bird_type":           extracted.get("bird_type"),
@@ -773,6 +804,15 @@ def process_fetched_article(
         "gdelt_location_match": extracted.get("gdelt_location_match"),
         "confidence":          extracted.get("confidence"),
         "extraction_notes":    extracted.get("extraction_notes"),
+        "response_action":     extracted.get("response_action"),
+        "is_crop_damage_event": extracted.get("is_crop_damage_event"),
+        "damage_cause":        extracted.get("damage_cause"),
+        "crop_type":           extracted.get("crop_type"),
+        "crop_season":         extracted.get("crop_season"),
+        "damage_extent":       extracted.get("damage_extent"),
+        "area_affected_ha":    extracted.get("area_affected_ha"),
+        "farmers_affected":    extracted.get("farmers_affected"),
+        "economic_loss_inr":   extracted.get("economic_loss_inr"),
         "_error":              extracted.get("_error"),
     })
 
@@ -780,7 +820,7 @@ def process_fetched_article(
     ploc_ok = _location_usable_for_geocode(ploc)
     final_lat, final_lon, geocode_source = None, None, "none"
 
-    if not no_geocode and extracted.get("is_hwc_event") and ploc_ok and GOOGLE_MAPS_API_KEY:
+    if not no_geocode and _csv_bool_true(norm_flag) and ploc_ok and GOOGLE_MAPS_API_KEY:
         lat, lon, addr = geocode_location(str(ploc).strip())
         time.sleep(SLEEP_GEOCODE)
         if lat is not None and lon is not None:
@@ -810,7 +850,7 @@ def accumulate_stats_from_result(stats: dict, result_row: dict) -> None:
     """Mirror the pilot run counters from a row produced by process_fetched_article."""
     if result_row.get("_error"):
         stats["extract_error"] += 1
-    elif result_row.get("is_hwc_event"):
+    elif _csv_bool_true(result_row.get("is_hwc_event")):
         stats["is_hwc"] += 1
     else:
         stats["not_hwc"] += 1
@@ -998,6 +1038,9 @@ def retry_failed_pilot_results(
     # object dtype: pandas StringDtype (from dtype=str) rejects int/float/bool on df.at[..]=...
     df = pd.read_csv(pilot_csv, dtype=object)
     df = ensure_event_id_column(df)
+    for _col in FINAL_REPORT_COLUMNS:
+        if _col not in df.columns:
+            df[_col] = ""
     _rp = Path(pilot_csv).resolve()
     _root = _rp.parent.parent
     _pfx = prefix_from_report_csv(_rp)
@@ -1465,11 +1508,33 @@ def main(
                 else "article fetch failed"
             )
             result_row.update({
-                "is_hwc_event": None, "species": None, "event_type": None,
-                "bird_type": None, "habitat_type": None,
-                "event_date": None, "primary_location": None,
-                "location_type": None, "confidence": None,
-                "final_lat": gdelt_lat, "final_lon": gdelt_lon,
+                "is_hwc_event": None,
+                "species": None,
+                "event_type": None,
+                "bird_type": None,
+                "habitat_type": None,
+                "humans_killed": None,
+                "humans_injured": None,
+                "animals_killed": None,
+                "animals_injured": None,
+                "event_date": None,
+                "primary_location": None,
+                "location_type": None,
+                "location_notes": None,
+                "gdelt_location_match": None,
+                "confidence": None,
+                "extraction_notes": None,
+                "response_action": None,
+                "is_crop_damage_event": None,
+                "damage_cause": None,
+                "crop_type": None,
+                "crop_season": None,
+                "damage_extent": None,
+                "area_affected_ha": None,
+                "farmers_affected": None,
+                "economic_loss_inr": None,
+                "final_lat": gdelt_lat,
+                "final_lon": gdelt_lon,
                 "geocode_source": "gdelt_fallback_no_text",
                 "_error": _fe,
             })
@@ -1507,7 +1572,7 @@ def main(
     print(f"\n✓ Finished writing {len(out_df)} rows → {output_csv}")
 
     # ── Quality report ─────────────────────────────────────────────────────
-    hwc_df    = out_df[out_df["is_hwc_event"] == True]
+    hwc_df    = out_df[out_df["is_hwc_event"].apply(_csv_bool_true)]
     n_total   = len(out_df)
     n_fetched = (
         stats["fetch_jina"] + stats["fetch_trafilatura"] + stats["fetch_cached"]
