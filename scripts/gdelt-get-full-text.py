@@ -49,8 +49,9 @@ Two-run workflow
      URLs with Selenium, leaves successful rows unchanged, rewrites the merged CSV after each
      retry so progress is not lost on crash. Successful Selenium extractions are saved to the
      same article-text directory.
-  3) Incremental LLM-only: after a fetch run, you can re-run with --llm-only to send cached
-     .txt files to Ollama without any article HTTP fetch.
+  3) Incremental LLM-only: after a fetch run, re-run with --llm-only to send cached .txt files
+     to Ollama without article HTTP. Use --resume-llm with --output pointing at an existing
+     final_report CSV to append only event_ids not yet in that file (requires cached text).
 
 Usage:
     python scripts/gdelt-get-full-text.py --sample 50
@@ -60,6 +61,7 @@ Usage:
     python scripts/gdelt-get-full-text.py --retry-failed-from --proxy-server http://proxy.example.com:8080
     python scripts/gdelt-get-full-text.py --sample 100 --fetch-workers 4
     python scripts/gdelt-get-full-text.py --llm-only
+    python scripts/gdelt-get-full-text.py --meta meta/cropdamage_india_meta.json --llm-only --resume-llm --output data/cropdamage_final_report.csv
     python scripts/gdelt-get-full-text.py --retry-failed-from --selenium-workers 2
 """
 
@@ -323,6 +325,65 @@ def load_article_text_cache(
         except (json.JSONDecodeError, OSError):
             pass
     return raw.strip(), (str(method).strip() if method else None) or "cached"
+
+
+def _processed_event_ids_from_report(path: Path) -> set[str]:
+    """event_id values already present in a pilot output CSV (for ``--resume-llm``)."""
+    if not path.is_file() or path.stat().st_size == 0:
+        return set()
+    try:
+        ex = pd.read_csv(path, dtype=object)
+    except Exception:
+        return set()
+    if "event_id" in ex.columns:
+        s = ex["event_id"].dropna().astype(str).str.strip()
+        return {x for x in s if x and x.lower() not in ("nan", "none")}
+    if "url" in ex.columns:
+        s = ex["url"].dropna().astype(str).str.strip()
+        return {x for x in s if x and x.lower() not in ("nan", "none")}
+    return set()
+
+
+def _ensure_final_report_schema(path: Path) -> None:
+    """Add missing ``FINAL_REPORT_COLUMNS`` to an existing CSV without dropping rows."""
+    if not path.is_file() or path.stat().st_size == 0:
+        return
+    df = pd.read_csv(path, dtype=object)
+    changed = False
+    for c in FINAL_REPORT_COLUMNS:
+        if c not in df.columns:
+            df[c] = ""
+            changed = True
+    if not changed:
+        return
+    tail = [c for c in df.columns if c not in FINAL_REPORT_COLUMNS]
+    df = df[list(FINAL_REPORT_COLUMNS) + tail]
+    df.to_csv(path, index=False, encoding="utf-8")
+
+
+def _filter_llm_resume_pending(
+    df: pd.DataFrame,
+    output_csv: str,
+    article_text_cache_dir: Path,
+) -> tuple[pd.DataFrame, int, int]:
+    """
+    Drop rows whose event_id already appears in ``output_csv``, then keep only rows
+    with non-empty cached article text under ``article_text_cache_dir``.
+    """
+    proc = _processed_event_ids_from_report(Path(output_csv))
+    eids = df["event_id"].astype(str).str.strip()
+    n0 = len(df)
+    df = df[~eids.isin(proc)].reset_index(drop=True)
+    skipped_done = n0 - len(df)
+    mask: list[bool] = []
+    for _, r in df.iterrows():
+        eid = str(r.get("event_id", "") or "").strip()
+        t, _ = load_article_text_cache(article_text_cache_dir, eid)
+        mask.append(bool(t))
+    n1 = len(df)
+    df = df[mask].reset_index(drop=True)
+    skipped_nocache = n1 - len(df)
+    return df, skipped_done, skipped_nocache
 
 
 # LLM system/user prompts: loaded from meta JSON (llm_extraction), see --meta.
@@ -1198,6 +1259,7 @@ def main(
     article_text_cache_dir: Path,
     force_fetch: bool = False,
     llm_only: bool = False,
+    llm_resume: bool = False,
 ):
     global _parallel_fetch_in_progress
 
@@ -1220,6 +1282,17 @@ def main(
     df = pd.read_csv(input_csv, dtype=str)
     df = ensure_event_id_column(df)
     print(f"  → {len(df)} total articles (first run: input has no fetch_method; it is added in output)")
+
+    if llm_only and llm_resume:
+        df, _sk_done, _sk_nc = _filter_llm_resume_pending(
+            df, output_csv, article_text_cache_dir
+        )
+        print(
+            f"  → --resume-llm: {_sk_done} row(s) already in {output_csv}; "
+            f"{_sk_nc} pending row(s) skipped (no cached text under {article_text_cache_dir}); "
+            f"{len(df)} row(s) left to run through the LLM",
+            flush=True,
+        )
 
     if sample_size == -1:
         sample = df
@@ -1257,6 +1330,14 @@ def main(
     }
 
     if len(sample) == 0:
+        _oc = Path(output_csv)
+        if llm_only and llm_resume and _oc.is_file():
+            print(
+                f"\n✓ Nothing to resume — no pending rows with cached text "
+                f"(all done or already in {_oc})",
+                flush=True,
+            )
+            return
         Path(output_csv).parent.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(columns=list(FINAL_REPORT_COLUMNS)).to_csv(
             output_csv, index=False, encoding="utf-8"
@@ -1272,7 +1353,11 @@ def main(
         print(f"✓ Report saved → {output_report}")
         return
 
-    init_incremental_final_report_csv(Path(output_csv), FINAL_REPORT_COLUMNS)
+    _out_csv = Path(output_csv)
+    if llm_only and llm_resume and _out_csv.is_file() and _out_csv.stat().st_size > 0:
+        _ensure_final_report_schema(_out_csv)
+    else:
+        init_incremental_final_report_csv(_out_csv, FINAL_REPORT_COLUMNS)
 
     n_sample = len(sample)
     use_tqdm = not verbose
@@ -1289,8 +1374,9 @@ def main(
         flush=True,
     )
     if llm_only:
+        _rm = "  Mode: --llm-only + --resume-llm (append new rows; skip event_ids already in output).\n"
         print(
-            "  Mode: --llm-only (no network fetch; cached text only).\n",
+            _rm if llm_resume else "  Mode: --llm-only (no network fetch; cached text only).\n",
             flush=True,
         )
     elif use_parallel_fetch:
@@ -1747,6 +1833,15 @@ if __name__ == "__main__":
         help="Do not fetch URLs; use only cached text under --article-text-dir (missing cache → failed row).",
     )
     p.add_argument(
+        "--resume-llm",
+        action="store_true",
+        help=(
+            "With --llm-only: read --output if it exists, skip event_ids already present, "
+            "and append LLM rows only for remaining URLs that have cached text (e.g. finish a partial run). "
+            "Does not truncate the output file."
+        ),
+    )
+    p.add_argument(
         "--selenium-workers",
         type=int,
         default=1,
@@ -1761,6 +1856,8 @@ if __name__ == "__main__":
         p.error("--fetch-workers must be >= 1")
     if args.llm_only and args.force_fetch:
         p.error("--llm-only and --force-fetch cannot be used together")
+    if args.resume_llm and not args.llm_only:
+        p.error("--resume-llm requires --llm-only")
     if args.selenium_workers < 1:
         p.error("--selenium-workers must be >= 1")
 
@@ -1821,4 +1918,5 @@ if __name__ == "__main__":
             article_text_cache_dir = _article_text_resolved,
             force_fetch   = args.force_fetch,
             llm_only      = args.llm_only,
+            llm_resume    = args.resume_llm,
         )

@@ -81,6 +81,7 @@ Fetches article text (Jina / trafilatura), runs the local Ollama model for struc
 - **Outputs:** `data/{prefix}_final_report.csv`, `outputs/{prefix}_final_report.txt`.
 - **Parallel fetch:** **`--fetch-workers N`** (default **1**) — when **N > 1**, **Jina** and **trafilatura** fallback each use up to **N** threads (non-blocking pool shutdown, bounded HTTP timeouts). **`TRAFILATURA_DOWNLOAD_TIMEOUT`** caps **`requests.get`** for the trafilatura path. **Ollama + geocode** still run **one row at a time** in order.
 - **Article text cache:** per-event files under **`data/{prefix}_article_text/`** (`{event_id}.txt` + `.meta.json`), or **`GDELT_ARTICLE_TEXT_DIR`** / **`--article-text-dir`**. Existing cache is reused unless **`--force-fetch`**. **`--llm-only`** skips all article HTTP and runs the LLM only on cached text.
+- **LLM-only resume:** **`--llm-only --resume-llm`** (requires both flags). Point **`--output`** at an existing report (e.g. `data/{prefix}_final_report.csv` or `data/{prefix}_final_report_updated.csv`). The script loads that file, skips any **`event_id`** already present, and **appends** LLM rows only for remaining URLs that still have non-empty cached text under **`data/{prefix}_article_text/`** (from an earlier fetch run). Input rows still come from the geocoded CSV (default `data/{prefix}_urls_geocoded.csv`). If every row is already in the output or has no cache, the report file is **not** overwritten.
 
 ### 4. `scripts/gdelt-get-full-text.py` (optional second run — Selenium retry)
 
@@ -92,10 +93,10 @@ Retries rows where `fetch_method` indicates failure, using Chrome/Selenium, then
 
 ### 5. `scripts/convert_csv_to_geojson.py`
 
-Builds a point GeoJSON from rows marked as HWC events with valid coordinates; optional QGIS categorized style.
+Builds a point GeoJSON from rows passing the domain filter in **`--meta`** (e.g. `is_hwc_event`, `is_crop_damage_event`) with valid coordinates; optional QGIS categorized style from the same meta.
 
-- **Inputs:** default `data/hwc_final_report_updated.csv` (or pass one or more `--input` CSVs); `meta/hwc_india_conflict_meta.json` (or your domain meta via `--meta`). With **multiple** `--input` files, URLs are de-duplicated (first wins) before building GeoJSON.
-- **Outputs:** `--output-geojson` (default `outputs/hwc_points.geojson`). With multiple inputs, **`--output-csv` is required** for the merged de-duplicated CSV. With `--write-qml`, default `outputs/{prefix}_india_points.qml`.
+- **Inputs:** default `data/{prefix}_final_report_updated.csv` where **`{prefix}`** is derived from the **`--meta`** filename (e.g. `hwc` → `hwc_final_report_updated.csv`, `cropdamage` → `cropdamage_final_report_updated.csv`). Pass one or more **`--input`** CSVs to override. Default **`--meta`** is `meta/hwc_india_conflict_meta.json`; use e.g. `meta/cropdamage_india_meta.json` or `meta/avianmortality_india_meta.json` for other domains. With **multiple** `--input` files, URLs are de-duplicated (first wins) before building GeoJSON.
+- **Outputs:** default **`outputs/{prefix}_points.geojson`** from **`--meta`**. With multiple inputs, **`--output-csv` is required** for the merged de-duplicated CSV. **`--write-qml`** without a path writes **`outputs/{prefix}_india_points.qml`**. Map categories and QML colors come from **`map_style`** in the meta; optional **`map_style.category_source_column`** names the CSV column used for grouping (default **`event_type`**; crop damage uses **`damage_cause`**).
 
 The web map (`frontend`) includes a **legend with category checkboxes** (filter points), **Download GeoJSON**, and **Download QGIS style (QML)** when `outputs/{prefix}_india_points.qml` exists, plus a **Dashboard** link (opens `/dashboard?layer=…` in a new tab) with charts and methodology text from the layer meta.
 

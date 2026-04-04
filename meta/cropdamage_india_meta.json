@@ -323,6 +323,7 @@
 
   "map_style": {
     "category_field": "map_category",
+    "category_source_column": "damage_cause",
     "description": "map_category is computed from damage_cause: merged groups below, else raw damage_cause, else unknown.",
     "merge_groups": [
       {
