@@ -338,6 +338,7 @@ export function formatCropHeatmapCropLabel(key: string): string {
 
 export function formatDamageCauseLabel(key: string): string {
   if (key === "unknown") return "Unknown";
+  if (key === "heavy_rain") return "Heavy rain";
   return key
     .split("_")
     .filter(Boolean)
@@ -346,13 +347,95 @@ export function formatDamageCauseLabel(key: string): string {
 }
 
 /**
- * Stacked counts by calendar year and damage_cause_raw, only for rows whose
+ * Normalized damage_cause tokens allowed on the Weather & drought stacked chart
+ * (cropdamage_india_meta map_style: weather_extreme + drought + common free-text weather).
+ * Excludes pest/disease/locust/fire so compound ``damage_cause_raw`` rows do not mix series.
+ */
+const WEATHER_DROUGHT_STACK_TOKENS = new Set<string>([
+  "unseasonal_rain",
+  "hailstorm",
+  "hail",
+  "flood",
+  "flooding",
+  "waterlogging",
+  "frost",
+  "heat_wave",
+  "heat",
+  "cyclone",
+  "cyclonic",
+  "drought",
+  "heavy_rain",
+  "rain",
+  "storm",
+  "snow",
+  "snowfall",
+  "gale",
+  "thunderstorm",
+  "lightning",
+  "inundation",
+  "innundation",
+  "typhoon",
+  "landslide",
+  "landslides",
+  "torrential",
+  "downpour",
+  "monsoon",
+  "cloudburst",
+  "wind",
+  "winds",
+]);
+
+/** Merge near-duplicate weather tokens into one stacked series (Weather & drought chart). */
+const WEATHER_DROUGHT_STACK_CANONICAL: Record<string, string> = {
+  snowfall: "snow",
+  inundation: "waterlogging",
+  innundation: "waterlogging",
+  landslides: "landslide",
+  rain: "heavy_rain",
+  gale: "storm",
+};
+
+function canonicalWeatherDroughtStackKeys(keys: string[]): string[] {
+  const mapped = keys.map((k) => WEATHER_DROUGHT_STACK_CANONICAL[k] ?? k);
+  return [...new Set(mapped)];
+}
+
+/** Normalized tokens for Pest / disease chart (merge_groups pest_disease only). */
+const PEST_DISEASE_STACK_TOKENS = new Set<string>([
+  "armyworm",
+  "pest_other",
+  "whitefly",
+  "disease_other",
+  "disease_fungal",
+  "disease_bacterial",
+  "disease_viral",
+]);
+
+export type CropDamageStackKind = "weather_drought" | "pest_disease";
+
+function filterCropDamageStackTokens(
+  keys: string[],
+  stackKind: CropDamageStackKind | undefined,
+): string[] {
+  if (!stackKind) return keys;
+  const allow =
+    stackKind === "weather_drought" ? WEATHER_DROUGHT_STACK_TOKENS : PEST_DISEASE_STACK_TOKENS;
+  return keys.filter((k) => allow.has(k));
+}
+
+/**
+ * Stacked counts by calendar year and damage_cause tokens, only for rows whose
  * map_category is in the filter (e.g. pest_disease, weather_extreme, or both).
+ * Compound ``damage_cause_raw`` values (comma/semicolon/& "and") are split so each
+ * cause increments its series (same rules as {@link splitDamageCauseTokens}).
+ * When ``stackKind`` is set, only tokens that belong on that chart are counted (avoids
+ * listing locust/pest causes on weather stacks or waterlogging on pest stacks).
  */
 export function aggregateCropDamageCauseByCategory(
   fc: FeatureCollection,
   mapCategoryFilter: string | string[],
   rawField = "damage_cause_raw",
+  stackKind?: CropDamageStackKind,
 ): {
   byYear: Record<number, Record<string, number>>;
   years: number[];
@@ -373,11 +456,22 @@ export function aggregateCropDamageCauseByCategory(
     if (!filterSet.has(cat)) continue;
     const y = parseYearFromProps(props);
     if (y === null) continue;
-    const rawIn = String(props[rawField] ?? "").trim();
-    const key = normDamageCauseRaw(rawIn);
+    const rawIn = props[rawField];
+    const tokens = splitDamageCauseTokens(rawIn);
+    let keys =
+      tokens.length > 0
+        ? tokens
+        : [normDamageCauseRaw(String(rawIn ?? ""))];
+    keys = filterCropDamageStackTokens(keys, stackKind);
+    if (stackKind === "weather_drought") {
+      keys = canonicalWeatherDroughtStackKeys(keys);
+    }
+    if (keys.length === 0) continue;
     if (!byYear[y]) byYear[y] = {};
-    byYear[y][key] = (byYear[y][key] || 0) + 1;
-    causeTotals[key] = (causeTotals[key] || 0) + 1;
+    for (const key of keys) {
+      byYear[y][key] = (byYear[y][key] || 0) + 1;
+      causeTotals[key] = (causeTotals[key] || 0) + 1;
+    }
   }
 
   const years = Object.keys(byYear)

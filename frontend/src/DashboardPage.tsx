@@ -335,12 +335,17 @@ export default function DashboardPage() {
 
   const pestCauseAgg = useMemo(() => {
     if (!fc || !isCropDamage) return null;
-    return aggregateCropDamageCauseByCategory(fc, "pest_disease");
+    return aggregateCropDamageCauseByCategory(fc, "pest_disease", "damage_cause_raw", "pest_disease");
   }, [fc, isCropDamage]);
 
   const weatherCauseAgg = useMemo(() => {
     if (!fc || !isCropDamage) return null;
-    return aggregateCropDamageCauseByCategory(fc, ["weather_extreme", "drought"]);
+    return aggregateCropDamageCauseByCategory(
+      fc,
+      ["weather_extreme", "drought"],
+      "damage_cause_raw",
+      "weather_drought",
+    );
   }, [fc, isCropDamage]);
 
   const cropTypeDamageHeatmapAgg = useMemo(() => {
@@ -739,7 +744,10 @@ export default function DashboardPage() {
           <h2>Pest / disease events by year (stacked by damage cause)</h2>
           <p className="hint">
             Only points with <code>map_category</code> = <code>pest_disease</code>. Stacks use{" "}
-            <code>damage_cause_raw</code> from the GeoJSON.
+            <code>damage_cause_raw</code> from the GeoJSON, split on commas/semicolons (and similar)
+            so compound causes each get their own series. Only pest/disease taxonomy tokens are
+            counted (weather-only tokens on the same row are omitted). Yearly stack totals can exceed
+            event counts when one row lists multiple causes.
           </p>
           {showLocustLine && (
             <p className="hint">
@@ -756,7 +764,10 @@ export default function DashboardPage() {
           <h2>Weather &amp; drought events by year (stacked by damage cause)</h2>
           <p className="hint">
             Points with <code>map_category</code> = <code>weather_extreme</code> or{" "}
-            <code>drought</code>. Stacks use <code>damage_cause_raw</code> from the GeoJSON.
+            <code>drought</code>. <code>damage_cause_raw</code> is split on commas/semicolons (and
+            similar); only weather/drought taxonomy tokens are counted (pest/locust tokens on the
+            same row are omitted). Yearly stack sums can exceed the number of points when causes are
+            combined on one row.
           </p>
           <ReactECharts option={weatherCauseOpt} style={{ height: 420 }} notMerge lazyUpdate />
         </section>
