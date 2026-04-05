@@ -308,10 +308,27 @@ def dedupe_articles_jaccard(
     if n_in <= 1:
         return articles.copy(), pd.DataFrame()
 
+    print(
+        "  [jaccard] start: "
+        f"n={n_in}, jaccard≥{jaccard_min} or "
+        f"(≥{jaccard_min_near_date} & date≤{max_days_apart}d), "
+        f"±{date_window_days}d window, min_intersection={min_intersection}, "
+        f"min_token_len={min_token_len}"
+    )
+
     df = articles.copy().reset_index(drop=True)
-    token_sets: list[frozenset[str]] = [
-        url_path_token_set(u, min_token_len, stopwords) for u in df["url"].tolist()
-    ]
+    urls = df["url"].tolist()
+    token_sets: list[frozenset[str]] = []
+    for u in tqdm(urls, desc="  [jaccard] tokenize URLs", unit="url", leave=False):
+        token_sets.append(url_path_token_set(u, min_token_len, stopwords))
+    n_empty_tokens = sum(1 for ts in token_sets if not ts)
+    lens = [len(ts) for ts in token_sets]
+    avg_tok = sum(lens) / len(lens) if lens else 0.0
+    print(
+        f"  [jaccard] token sets: empty={n_empty_tokens}, "
+        f"avg_tokens={avg_tok:.1f}, max_tokens={max(lens) if lens else 0}"
+    )
+
     dts = pd.to_datetime(
         df["seendate"], format="%Y%m%d%H%M%S", utc=True, errors="coerce"
     )
@@ -322,14 +339,22 @@ def dedupe_articles_jaccard(
     )
 
     inverted: dict[str, list[int]] = defaultdict(list)
-    for i, ts in enumerate(token_sets):
+    for i, ts in enumerate(
+        tqdm(token_sets, desc="  [jaccard] inverted index", unit="row", leave=False)
+    ):
         for t in ts:
             if len(t) >= min_token_len:
                 inverted[t].append(i)
+    n_indexed_tokens = len(inverted)
+    max_postings = max((len(v) for v in inverted.values()), default=0)
+    print(
+        f"  [jaccard] index: {n_indexed_tokens} token keys, "
+        f"max postings/term={max_postings}"
+    )
 
     uf = _UnionFind(len(df))
     pairs: set[tuple[int, int]] = set()
-    for i in range(len(df)):
+    for i in tqdm(range(len(df)), desc="  [jaccard] candidate pairs", unit="row", leave=False):
         di = int(day_ord.iloc[i])
         for t in token_sets[i]:
             for j in inverted.get(t, []):
@@ -339,21 +364,47 @@ def dedupe_articles_jaccard(
                 if abs(di - dj) > date_window_days:
                     continue
                 pairs.add((i, j))
+    print(f"  [jaccard] candidate pairs: {len(pairs)}")
 
-    for i, j in pairs:
+    n_skip_inter = 0
+    n_skip_jacc = 0
+    n_merge = 0
+    for i, j in tqdm(
+        pairs,
+        desc="  [jaccard] evaluate & union",
+        unit="pair",
+        leave=False,
+    ):
         inter = len(token_sets[i] & token_sets[j])
         if inter < min_intersection:
+            n_skip_inter += 1
             continue
         jac = _token_jaccard(token_sets[i], token_sets[j])
         days_apart = abs(int(day_ord.iloc[i]) - int(day_ord.iloc[j]))
         if jac >= jaccard_min or (
             jac >= jaccard_min_near_date and days_apart <= max_days_apart
         ):
-            uf.union(i, j)
+            if uf.find(i) != uf.find(j):
+                uf.union(i, j)
+                n_merge += 1
+        else:
+            n_skip_jacc += 1
+
+    print(
+        "  [jaccard] unions: merged_groups="
+        f"{n_merge}, skip_low_intersection={n_skip_inter}, "
+        f"skip_below_jaccard={n_skip_jacc}"
+    )
 
     groups: dict[int, list[int]] = defaultdict(list)
     for i in range(len(df)):
         groups[uf.find(i)].append(i)
+
+    n_multi = sum(1 for mem in groups.values() if len(mem) > 1)
+    print(
+        f"  [jaccard] clusters: {len(groups)} (multi-row: {n_multi}), "
+        "picking earliest seendate per cluster..."
+    )
 
     kept_rows: list[int] = []
     dropped_chunks: list[pd.DataFrame] = []
@@ -443,7 +494,7 @@ def jaccard_settings_from_meta(meta: dict) -> dict[str, object]:
     sw = sec.get("stopwords") or []
     stop = {str(x).lower() for x in sw} if isinstance(sw, list) else set()
     return {
-        "jaccard_min": float(sec.get("jaccard_min", 0.88)),
+        "jaccard_min": float(sec.get("jaccard_min", 0.75)),
         "jaccard_min_near_date": float(sec.get("jaccard_min_near_date", 0.72)),
         "max_days_apart": int(sec.get("max_days_apart", 3)),
         "date_window_days": int(sec.get("date_window_days", 4)),
