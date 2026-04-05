@@ -195,6 +195,61 @@
   gap: 12px;
 }
 
+.panel--compact {
+  padding: 8px 10px;
+  gap: 6px;
+}
+
+.panel-fetch-range {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.3;
+}
+
+.field--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.field--inline .field-label {
+  flex: 0 0 auto;
+  min-width: 3.25rem;
+  color: #555;
+  font-size: 0.85rem;
+}
+
+.field--inline input,
+.field--inline select {
+  flex: 1;
+  min-width: 0;
+}
+
+.layer-select-wrap {
+  width: 100%;
+  align-self: stretch;
+}
+
+.layer-select {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+.section-hint-below {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+  line-height: 1.3;
+}
+
+.map-point-count {
+  margin: 0 0 10px;
+  font-size: 0.8rem;
+}
+
 .panel-head {
   display: flex;
   align-items: flex-start;
@@ -242,7 +297,7 @@
 }
 
 .layer-downloads {
-  margin: -2px 0 10px;
+  margin: 0;
   font-size: 0.8rem;
   display: flex;
   flex-wrap: wrap;
@@ -270,6 +325,10 @@
 .section h2 {
   margin: 0 0 6px;
   font-size: 0.95rem;
+}
+
+.section.section--compact .json {
+  margin-top: 6px;
 }
 
 .hint {

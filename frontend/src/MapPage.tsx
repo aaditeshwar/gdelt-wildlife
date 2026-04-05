@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Feature, FeatureCollection } from "geojson";
 import maplibregl, { Map, MapMouseEvent, StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { api, apiUrl } from "./api";
+import { api, apiUrl, formatFetchWindowLine } from "./api";
 import "./App.css";
 
 type LayerInfo = {
@@ -22,6 +22,14 @@ type StylePayload = {
   merge_groups?: MergeGroup[];
   singleton_event_types?: string[];
   fallback_category?: string;
+};
+
+/** Subset of `/api/layers/:id/meta-summary` used on the map page. */
+type MetaSummaryBrief = {
+  methodology?: {
+    fetch_start_date?: string | null;
+    fetch_end_date?: string | null;
+  };
 };
 
 type PendingEdit = {
@@ -136,7 +144,31 @@ function filterByCategories(
   return { type: "FeatureCollection", features: feats };
 }
 
-function buildLegendEntries(style: StylePayload): { id: string; label: string; color: string }[] {
+/** First character uppercased for map legend rows (keeps remainder as authored). */
+function capitalizeLegendLabel(label: string): string {
+  const t = label.trim();
+  if (!t) return label;
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+/** Avian mortality: put Human bird flu after Other avian disease / non-AI mortality. */
+const AVIAN_LEGEND_ID_ORDER = [
+  "ai_wild",
+  "ai_domestic",
+  "ai_mixed",
+  "other_disease",
+  "human_h5",
+];
+
+function avianLegendOrderRank(id: string): number {
+  const i = AVIAN_LEGEND_ID_ORDER.indexOf(id);
+  return i === -1 ? 999 : i;
+}
+
+function buildLegendEntries(
+  style: StylePayload,
+  layerId: string,
+): { id: string; label: string; color: string }[] {
   const colors = style.colors_hex || {};
   const labelById: Record<string, string> = {};
   for (const g of style.merge_groups || []) {
@@ -156,8 +188,25 @@ function buildLegendEntries(style: StylePayload): { id: string; label: string; c
       color,
     });
   }
-  out.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
-  return out;
+  const tailIds = new Set(["other", "unknown", "unclassified"]);
+  let main = out.filter((e) => !tailIds.has(e.id));
+  const tail = out.filter((e) => tailIds.has(e.id));
+  if (layerId === "cropdamage_india") {
+    main = main.filter((e) => e.id !== "unknown");
+  }
+  main.sort((a, b) => {
+    if (layerId === "avianmortality_india") {
+      const da = avianLegendOrderRank(a.id);
+      const db = avianLegendOrderRank(b.id);
+      if (da !== db) return da - db;
+    }
+    return a.label.localeCompare(b.label, undefined, { sensitivity: "base" });
+  });
+  tail.sort((a, b) => a.id.localeCompare(b.id));
+  return [...main, ...tail].map((e) => ({
+    ...e,
+    label: capitalizeLegendLabel(e.label),
+  }));
 }
 
 export default function MapPage() {
@@ -170,6 +219,7 @@ export default function MapPage() {
   const [layerId, setLayerId] = useState<string>("");
   const [rawGeojson, setRawGeojson] = useState<FeatureCollection | null>(null);
   const [stylePayload, setStylePayload] = useState<StylePayload | null>(null);
+  const [metaSummary, setMetaSummary] = useState<MetaSummaryBrief | null>(null);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Feature | null>(null);
   const [editJson, setEditJson] = useState("{}");
@@ -185,8 +235,8 @@ export default function MapPage() {
   const [enabledCategories, setEnabledCategories] = useState<Record<string, boolean>>({});
 
   const legendEntries = useMemo(
-    () => (stylePayload ? buildLegendEntries(stylePayload) : []),
-    [stylePayload],
+    () => (stylePayload && layerId ? buildLegendEntries(stylePayload, layerId) : []),
+    [stylePayload, layerId],
   );
 
   useEffect(() => {
@@ -203,6 +253,9 @@ export default function MapPage() {
     return filterByCategories(searched, cat, fb, enabledCategories);
   }, [rawGeojson, search, stylePayload, enabledCategories]);
 
+  const totalPointCount = rawGeojson?.features?.length ?? 0;
+  const displayedPointCount = mapFilteredGeojson?.features?.length ?? 0;
+
   const layerDownloadNames = useMemo(() => {
     if (!layerId) return null;
     const layer = layers.find((l) => l.id === layerId);
@@ -217,11 +270,21 @@ export default function MapPage() {
   }, [layerId, layers]);
 
   useEffect(() => {
+    const params = new URLSearchParams(
+      typeof window !== "undefined" ? window.location.search : "",
+    );
+    const wanted = params.get("layer")?.trim() || "";
     api<LayerInfo[]>("/api/meta/layers")
       .then((ls) => {
         setLayers(ls);
-        const first = ls.find((l) => l.has_geojson) || ls[0];
-        if (first) setLayerId(first.id);
+        const hwc = ls.find((l) => l.has_geojson && l.prefix === "hwc");
+        const first = hwc || ls.find((l) => l.has_geojson) || ls[0];
+        const fromUrl =
+          wanted && ls.some((l) => l.id === wanted && l.has_geojson)
+            ? ls.find((l) => l.id === wanted)
+            : null;
+        const pick = fromUrl || first;
+        if (pick) setLayerId(pick.id);
       })
       .catch((e) => setMsg(String(e)));
   }, []);
@@ -254,21 +317,35 @@ export default function MapPage() {
     Promise.all([
       api<FeatureCollection>(`/api/layers/${encodeURIComponent(layerId)}/geojson`),
       api<StylePayload>(`/api/layers/${encodeURIComponent(layerId)}/style`),
+      api<MetaSummaryBrief>(`/api/layers/${encodeURIComponent(layerId)}/meta-summary`),
     ])
-      .then(([gj, st]) => {
+      .then(([gj, st, ms]) => {
         if (cancelled) return;
         setRawGeojson(gj);
         setStylePayload(st);
+        setMetaSummary(ms);
         setSelected(null);
         setMsg(null);
       })
       .catch((e) => {
-        if (!cancelled) setMsg(String(e));
+        if (!cancelled) {
+          setMsg(String(e));
+          setMetaSummary(null);
+        }
       });
     return () => {
       cancelled = true;
     };
   }, [layerId]);
+
+  const mapFetchWindowLine = useMemo(
+    () =>
+      formatFetchWindowLine(
+        metaSummary?.methodology?.fetch_start_date,
+        metaSummary?.methodology?.fetch_end_date,
+      ),
+    [metaSummary?.methodology?.fetch_start_date, metaSummary?.methodology?.fetch_end_date],
+  );
 
   useEffect(() => {
     popupRef.current?.remove();
@@ -553,7 +630,7 @@ export default function MapPage() {
           </div>
         )}
       </div>
-      <aside className="panel">
+      <aside className="panel panel--compact">
         <header className="panel-head">
           <h1>GDELT map</h1>
           <div className="panel-actions">
@@ -572,11 +649,16 @@ export default function MapPage() {
           </div>
         </header>
 
-        <label className="field">
-          <span>Layer</span>
+        {mapFetchWindowLine && (
+          <p className="muted panel-fetch-range">{mapFetchWindowLine}</p>
+        )}
+
+        <div className="layer-select-wrap">
           <select
+            className="layer-select"
             value={layerId}
             onChange={(e) => setLayerId(e.target.value)}
+            aria-label="Layer"
           >
             {layers.map((l) => (
               <option key={l.id} value={l.id} disabled={!l.has_geojson}>
@@ -585,7 +667,7 @@ export default function MapPage() {
               </option>
             ))}
           </select>
-        </label>
+        </div>
 
         {layerId &&
           layers.find((l) => l.id === layerId)?.has_geojson && (
@@ -631,15 +713,20 @@ export default function MapPage() {
           />
         </label>
 
+        {layerId && layers.find((l) => l.id === layerId)?.has_geojson && rawGeojson ? (
+          <p className="muted map-point-count" aria-live="polite">
+            Points: <strong>{displayedPointCount}</strong> / {totalPointCount}
+          </p>
+        ) : null}
+
         {msg && <p className="banner">{msg}</p>}
 
-        <section className="section">
+        <section className="section section--compact">
           <h2>Selected</h2>
-          {selected ? (
-            <pre className="json">{JSON.stringify(props, null, 2)}</pre>
-          ) : (
-            <p className="muted">Click a point on the map.</p>
+          {!selected && (
+            <p className="muted section-hint-below">Click on a point on the map.</p>
           )}
+          {selected ? <pre className="json">{JSON.stringify(props, null, 2)}</pre> : null}
         </section>
 
         <section className="section">

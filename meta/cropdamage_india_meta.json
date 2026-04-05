@@ -289,6 +289,8 @@
         "locust",
         "armyworm",
         "pest_other",
+        "whitefly",
+        "disease_other",
         "disease_fungal",
         "disease_bacterial",
         "disease_viral",
@@ -325,7 +327,35 @@
     "category_field": "map_category",
     "category_source_column": "damage_cause",
     "description": "map_category is computed from damage_cause: merged groups below, else raw damage_cause, else unknown.",
+    "_taxonomy_audit": {
+      "csv_reference": "cropdamage_final_report.csv",
+      "note": "event_type column is empty in this extract; damage_cause is authoritative for compute_map_category. After splitting damage_cause on commas/semicolons/and, normalized tokens include values beyond merge_groups; those map via singleton_event_types or fallback_category (other). Merge groups are therefore not exhaustive of raw tokens.",
+      "examples_tokens_not_in_merge_groups": [
+        "whitefly",
+        "disease_other",
+        "heavy_rain",
+        "snow",
+        "snowfall",
+        "storm",
+        "gale",
+        "inundation",
+        "landslides",
+        "lightning",
+        "elephant",
+        "wild_animals",
+        "lockdown",
+        "price_crash"
+      ],
+      "weather_extreme_list_is_not_exhaustive_of_weather_like_tokens": true,
+      "pest_disease_list_is_not_exhaustive": true,
+      "recommendation": "Optional: add whitefly and disease_other to pest_disease event_types; add storm/snow/lightning-style tokens to weather_extreme or leave as other until labels are normalized in CSV."
+    },
     "merge_groups": [
+      {
+        "id": "locust",
+        "label": "Locust",
+        "event_types": ["locust"]
+      },
       {
         "id": "weather_extreme",
         "label": "Weather extreme (rain, hail, flood, frost, heat, cyclone)",
@@ -343,7 +373,7 @@
         "id": "pest_disease",
         "label": "Pest or disease outbreak",
         "event_types": [
-          "locust", "armyworm", "pest_other",
+          "armyworm", "pest_other", "whitefly", "disease_other",
           "disease_fungal", "disease_bacterial", "disease_viral"
         ]
       }
@@ -351,6 +381,7 @@
     "singleton_event_types": ["fire", "other"],
     "fallback_category": "other",
     "colors_hex": {
+      "locust":          "#c99402",
       "weather_extreme": "#4575b4",
       "drought":         "#d73027",
       "pest_disease":    "#1a9850",

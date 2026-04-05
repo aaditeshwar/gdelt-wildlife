@@ -90,18 +90,122 @@ def _norm_event_type(raw) -> str:
     return s
 
 
-def compute_map_category(event_type, meta: dict) -> str:
+def _split_category_tokens(raw) -> list[str]:
+    """Split a damage_cause / event_type cell on commas, semicolons, slashes, or ' and '."""
+    if raw is None:
+        return []
+    try:
+        if pd.isna(raw):
+            return []
+    except (TypeError, ValueError):
+        pass
+    s = str(raw).strip()
+    if not s or s.lower() in ("nan", "none"):
+        return []
+    parts = re.split(r"[,;/]|\s+and\s+", s, flags=re.I)
+    return [p.strip() for p in parts if p.strip()]
+
+
+# Free-form tokens not listed in merge_groups.event_types but meaning weather extremes (crop damage).
+_WEATHER_FREE_TOKENS = frozenset(
+    {
+        "heavy_rain",
+        "rain",
+        "storm",
+        "snow",
+        "snowfall",
+        "gale",
+        "thunderstorm",
+        "lightning",
+        "inundation",
+        "landslide",
+        "landslides",
+        "typhoon",
+        "wind",
+        "winds",
+        "hail",
+        "torrential",
+        "downpour",
+        "monsoon",
+        "cloudburst",
+        "cyclonic",
+        "cyclone",
+        "flood",
+        "flooding",
+        "frost",
+        "heat_wave",
+        "heat",
+        "waterlogging",
+        "unseasonal_rain",
+        "hailstorm",
+    }
+)
+
+
+def _infer_weather_from_token(tok: str, meta: dict) -> bool:
+    """True if token should map to weather_extreme for crop-style metas."""
     ms = meta.get("map_style", {})
+    if "weather_extreme" not in {g["id"] for g in ms.get("merge_groups", [])}:
+        return False
+    e = _norm_event_type(tok.replace(" ", "_"))
+    if not e:
+        return False
+    if e in _WEATHER_FREE_TOKENS:
+        return True
+    # Word-boundary style match on underscored form (avoids matching 'rain' inside 'grain')
+    if re.search(
+        r"(^|_)(rain|hail|storm|flood|cyclone|snow|frost|heat|gale|wind|lightning|inundation|monsoon|typhoon|hail)(_|$)",
+        e,
+    ):
+        return True
+    return False
+
+
+def compute_map_category(event_type, meta: dict) -> str:
+    """Map normalized event type(s) to ``map_category`` using merge_groups and singletons."""
+    ms = meta.get("map_style", {})
+    tokens = _split_category_tokens(event_type)
+    if not tokens:
+        return ms.get("fallback_category", "unknown")
+
+    def category_for_single(et: str) -> str | None:
+        if not et:
+            return None
+        for group in ms.get("merge_groups", []):
+            merged = {str(x).strip().lower() for x in group.get("event_types", [])}
+            if et in merged:
+                return group["id"]
+        singles = {str(x).strip().lower() for x in ms.get("singleton_event_types", [])}
+        if et in singles:
+            return et
+        return None
+
+    # Try each comma/semicolon-separated token against declared merge groups first.
+    for tok in tokens:
+        et = _norm_event_type(tok.replace(" ", "_"))
+        if not et:
+            continue
+        hit = category_for_single(et)
+        if hit is not None:
+            return hit
+
+    # Same tokens: free-form weather wording → weather_extreme (often ends up as ``other`` above).
+    for tok in tokens:
+        et = _norm_event_type(tok.replace(" ", "_"))
+        if not et:
+            continue
+        if _infer_weather_from_token(tok, meta):
+            return "weather_extreme"
+
+    # Whole cell as a single token (legacy behaviour for odd spacing)
     et = _norm_event_type(event_type)
-    if not et:
-        return "unknown"
-    for group in ms.get("merge_groups", []):
-        merged = {str(x).strip().lower() for x in group.get("event_types", [])}
-        if et in merged:
-            return group["id"]
-    singles = {str(x).strip().lower() for x in ms.get("singleton_event_types", [])}
-    if et in singles:
-        return et
+    if et:
+        hit = category_for_single(et)
+        if hit is not None:
+            return hit
+        if _infer_weather_from_token(str(event_type), meta):
+            return "weather_extreme"
+
     return ms.get("fallback_category", "other")
 
 
@@ -219,6 +323,35 @@ _BOILERPLATE_LINE = re.compile(
     r"RECOMMENDED STORIES)\s*$",
     re.I,
 )
+
+
+def _is_publication_or_nav_line(s: str) -> bool:
+    """Lines that look like bylines/dates, not headlines (common at top of trafilatura text)."""
+    t = s.strip()
+    if not t:
+        return True
+    if re.match(r"^Published\s*[-–:]", t, re.I):
+        return True
+    if re.match(r"^Last\s+(updated|modified|published)\s*[-:]", t, re.I):
+        return True
+    if re.match(r"^(Updated|Posted)\s*[-:]", t, re.I):
+        return True
+    return False
+
+
+def _is_bad_inferred_title(s: str) -> bool:
+    """Reject publication datelines, ProKerala-style ids (A1234567), and numeric slugs."""
+    t = (s or "").strip()
+    if not t:
+        return True
+    if _is_publication_or_nav_line(t):
+        return True
+    # ProKerala path slug a994551 → "A994551"; similar id-only "titles"
+    if re.fullmatch(r"[A-Za-z]?\d{6,}", t):
+        return True
+    if re.fullmatch(r"[a-z]\d{5,}", t, re.I):
+        return True
+    return False
 
 
 def _is_blank_prop(val) -> bool:
@@ -349,12 +482,31 @@ def title_from_url(url: str) -> str | None:
     if not url:
         return None
     try:
-        path = urlparse(url).path or ""
-        seg = path.strip("/").split("/")[-1] if path else ""
-        if not seg:
+        parsed = urlparse(url)
+        path = parsed.path or ""
+        host = (parsed.netloc or "").lower()
+        segments = [p for p in path.strip("/").split("/") if p]
+        # e.g. pudhari.news/.../slug/ar — trailing "ar" is a locale suffix, not the headline slug
+        while len(segments) >= 2 and len(segments[-1]) == 2 and segments[-1].isalpha():
+            segments.pop()
+        if not segments:
             return None
-        seg = seg.split("?")[0]
-        seg = re.sub(r"\.[a-z0-9]{1,5}$", "", seg, flags=re.I)
+        last = segments[-1].split("?")[0]
+        last = re.sub(r"\.[a-z0-9]{1,5}$", "", last, flags=re.I)
+
+        # The Hindu / Hindu Business Line: .../headline-slug/articleNNNNNNN.ece
+        if re.fullmatch(r"article\d+", last, re.I) and len(segments) >= 2:
+            seg = segments[-2].split("?")[0]
+            seg = re.sub(r"\.[a-z0-9]{1,5}$", "", seg, flags=re.I)
+        else:
+            seg = last
+
+        # ProKerala: .../news/articles/a994551.html — no headline in URL
+        if "prokerala.com" in host and re.fullmatch(r"a\d+", seg, re.I):
+            return None
+
+        if not seg or seg.isdigit():
+            return None
         # Business Standard / similar: strip trailing story id like -120010201342_1
         seg = re.sub(r"-\d{9,}(?:_\d+)?$", "", seg, flags=re.I)
         seg = re.sub(r"_\d+_1$", "", seg, flags=re.I)
@@ -405,11 +557,15 @@ def title_from_text(text: str) -> str | None:
             25 <= len(first) <= 130
             and _looks_like_headline(first)
             and not first.startswith("📌")
+            and not _is_publication_or_nav_line(first)
+            and not _is_bad_inferred_title(first)
         ):
             return first
     candidates: list[tuple[int, int, str]] = []
     for i, s in enumerate(lines):
         if len(s) < 25:
+            continue
+        if _is_publication_or_nav_line(s) or _is_bad_inferred_title(s):
             continue
         if s.startswith(("- ", "• ", "📌", "* ")):
             continue
@@ -439,6 +595,21 @@ def title_from_text(text: str) -> str | None:
     return pick[2]
 
 
+def title_from_location_notes(props: dict) -> str | None:
+    """First line of ``location_notes`` when URL/text do not yield a real headline (e.g. ProKerala)."""
+    ln = props.get("location_notes")
+    if _is_blank_prop(ln):
+        return None
+    s = str(ln).strip().splitlines()[0].strip()
+    if len(s) < 12:
+        return None
+    if _is_bad_inferred_title(s):
+        return None
+    if len(s) > 220:
+        s = s[:217].rsplit(" ", 1)[0] + "…"
+    return s
+
+
 def enrich_geojson_properties(
     props: dict,
     url: str,
@@ -447,8 +618,10 @@ def enrich_geojson_properties(
     enabled: bool,
 ) -> None:
     """
-    Fill empty ``title``, normalize ``pub_date`` from GDELT seendate, fill empty
-    ``pub_date`` / ``event_date`` from URL or cached article text. Mutates ``props``.
+    Fill empty or bogus ``title`` (e.g. ``Published - …`` datelines, ProKerala id slugs),
+    normalize ``pub_date`` from GDELT seendate, fill empty ``pub_date`` / ``event_date``
+    from URL or cached article text. Uses ``location_notes`` as a title fallback when
+    URL slug and article text do not yield a headline. Mutates ``props``.
     """
     if not enabled:
         return
@@ -463,11 +636,18 @@ def enrich_geojson_properties(
     url_d = parse_date_from_url(url)
     text_d = infer_date_from_text(cache_text, url) if cache_text else None
 
-    if _is_blank_prop(props.get("title")):
+    cur_title = props.get("title")
+    if _is_blank_prop(cur_title) or _is_bad_inferred_title(str(cur_title).strip()):
         raw = title_from_url(url)
+        if _is_bad_inferred_title(raw) if raw else True:
+            raw = None
         if not raw and cache_text:
             raw = title_from_text(cache_text)
-        if raw:
+        if _is_bad_inferred_title(raw) if raw else True:
+            raw = None
+        if not raw:
+            raw = title_from_location_notes(props)
+        if raw and not _is_bad_inferred_title(raw):
             props["title"] = capitalize_words(raw)
 
     if _is_blank_prop(props.get("pub_date")):

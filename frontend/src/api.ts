@@ -17,3 +17,16 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   if (ct.includes("application/json")) return r.json() as Promise<T>;
   return undefined as T;
 }
+
+/** One-line label for GDELT DOC fetch dates from domain meta (`gdelt_doc_fetch`). */
+export function formatFetchWindowLine(
+  start: string | null | undefined,
+  end: string | null | undefined,
+): string | null {
+  const a = typeof start === "string" ? start.trim() : "";
+  const b = typeof end === "string" ? end.trim() : "";
+  if (a && b) return `GDELT fetch window: ${a} – ${b}`;
+  if (a) return `GDELT fetch from: ${a}`;
+  if (b) return `GDELT fetch until: ${b}`;
+  return null;
+}

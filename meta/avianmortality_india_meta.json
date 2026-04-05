@@ -382,19 +382,22 @@
         "id": "other_disease",
         "label": "Other avian disease / non-AI mortality",
         "event_types": ["other_avian_disease", "non_ai_mortality"]
+      },
+      {
+        "id": "unclassified",
+        "label": "Not applicable / other / unknown",
+        "event_types": ["not_applicable", "other", "unknown"]
       }
     ],
-    "singleton_event_types": ["not_applicable"],
-    "fallback_category": "other",
+    "singleton_event_types": [],
+    "fallback_category": "unclassified",
     "colors_hex": {
       "ai_wild": "#1a9850",
       "ai_domestic": "#f46d43",
       "ai_mixed": "#762a83",
       "human_h5": "#d73027",
       "other_disease": "#fc8d59",
-      "not_applicable": "#bdbdbd",
-      "other": "#737373",
-      "unknown": "#bdbdbd"
+      "unclassified": "#9e9e9e"
     }
   },
 
