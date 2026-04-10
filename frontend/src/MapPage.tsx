@@ -3,6 +3,7 @@ import type { Feature, FeatureCollection } from "geojson";
 import maplibregl, { Map, MapMouseEvent, StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { api, apiUrl, formatFetchWindowLine } from "./api";
+import { parseYearMonthFromProps } from "./lib/dashboardStats";
 import "./App.css";
 
 type LayerInfo = {
@@ -144,6 +145,62 @@ function filterByCategories(
   return { type: "FeatureCollection", features: feats };
 }
 
+/** Year checkboxes and date filtering only include this calendar year onward. */
+const MIN_MAP_YEAR = 2020;
+
+const CALENDAR_MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] as const;
+const MONTH_SHORT = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+
+function collectYearsFromGeojson(fc: FeatureCollection): number[] {
+  const ys = new Set<number>();
+  for (const f of fc.features || []) {
+    const p = (f.properties || {}) as Record<string, unknown>;
+    const ym = parseYearMonthFromProps(p);
+    if (ym && ym.year >= MIN_MAP_YEAR) ys.add(ym.year);
+  }
+  return [...ys].sort((a, b) => a - b);
+}
+
+function filterByYearMonth(
+  fc: FeatureCollection,
+  enabledYears: Record<number, boolean>,
+  enabledMonths: Record<number, boolean>,
+  yearsInData: number[],
+): FeatureCollection {
+  const allMonthsOn = CALENDAR_MONTHS.every((m) => enabledMonths[m] !== false);
+  const allYearsOn =
+    yearsInData.length === 0 || yearsInData.every((y) => enabledYears[y] !== false);
+
+  const feats = (fc.features || []).filter((f) => {
+    const p = (f.properties || {}) as Record<string, unknown>;
+    const ym = parseYearMonthFromProps(p);
+    if (ym === null) {
+      return allYearsOn && allMonthsOn;
+    }
+    if (ym.year < MIN_MAP_YEAR) return false;
+    if (enabledYears[ym.year] === false) return false;
+    if (ym.month === null) {
+      return allMonthsOn;
+    }
+    if (enabledMonths[ym.month] === false) return false;
+    return true;
+  });
+  return { type: "FeatureCollection", features: feats };
+}
+
 /** First character uppercased for map legend rows (keeps remainder as authored). */
 function capitalizeLegendLabel(label: string): string {
   const t = label.trim();
@@ -233,6 +290,26 @@ export default function MapPage() {
   const [legendOpen, setLegendOpen] = useState(true);
   /** Category id -> visible (all true by default when legend loads). */
   const [enabledCategories, setEnabledCategories] = useState<Record<string, boolean>>({});
+  /** Calendar year -> visible (default all years in layer). */
+  const [enabledYears, setEnabledYears] = useState<Record<number, boolean>>({});
+  /** Month 1–12 -> visible (default all on). */
+  const [enabledMonths, setEnabledMonths] = useState<Record<number, boolean>>({});
+
+  const uniqueYears = useMemo(
+    () => (rawGeojson ? collectYearsFromGeojson(rawGeojson) : []),
+    [rawGeojson],
+  );
+
+  useEffect(() => {
+    if (!rawGeojson) {
+      setEnabledYears({});
+      setEnabledMonths({});
+      return;
+    }
+    const ys = collectYearsFromGeojson(rawGeojson);
+    setEnabledYears(Object.fromEntries(ys.map((y) => [y, true])));
+    setEnabledMonths(Object.fromEntries(CALENDAR_MONTHS.map((m) => [m, true])));
+  }, [rawGeojson]);
 
   const legendEntries = useMemo(
     () => (stylePayload && layerId ? buildLegendEntries(stylePayload, layerId) : []),
@@ -247,11 +324,20 @@ export default function MapPage() {
 
   const mapFilteredGeojson = useMemo(() => {
     if (!rawGeojson || !stylePayload) return null;
-    const searched = filterFeatures(rawGeojson, search);
+    let fc = filterFeatures(rawGeojson, search);
+    fc = filterByYearMonth(fc, enabledYears, enabledMonths, uniqueYears);
     const cat = stylePayload.category_field || "map_category";
     const fb = stylePayload.fallback_category || "other";
-    return filterByCategories(searched, cat, fb, enabledCategories);
-  }, [rawGeojson, search, stylePayload, enabledCategories]);
+    return filterByCategories(fc, cat, fb, enabledCategories);
+  }, [
+    rawGeojson,
+    search,
+    stylePayload,
+    enabledCategories,
+    enabledYears,
+    enabledMonths,
+    uniqueYears,
+  ]);
 
   const totalPointCount = rawGeojson?.features?.length ?? 0;
   const displayedPointCount = mapFilteredGeojson?.features?.length ?? 0;
@@ -580,6 +666,20 @@ export default function MapPage() {
     setEnabledCategories((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
+  const toggleYear = (y: number) => {
+    setEnabledYears((prev) => {
+      const cur = prev[y] !== false;
+      return { ...prev, [y]: !cur };
+    });
+  };
+
+  const toggleMonth = (m: number) => {
+    setEnabledMonths((prev) => {
+      const cur = prev[m] !== false;
+      return { ...prev, [m]: !cur };
+    });
+  };
+
   return (
     <div className="layout">
       <div className="map-wrap">
@@ -712,6 +812,52 @@ export default function MapPage() {
             placeholder="Filter by title, species, url, …"
           />
         </label>
+
+        {layerId &&
+          layers.find((l) => l.id === layerId)?.has_geojson &&
+          rawGeojson &&
+          rawGeojson.features &&
+          rawGeojson.features.length > 0 && (
+            <div className="panel-date-filters">
+              <div className="panel-date-filters-head">Date filter</div>
+              {uniqueYears.length > 0 && (
+                <fieldset className="panel-date-fieldset">
+                  <legend>Year</legend>
+                  <ul className="panel-date-checklist">
+                    {uniqueYears.map((y) => (
+                      <li key={y}>
+                        <label className="panel-date-check">
+                          <input
+                            type="checkbox"
+                            checked={enabledYears[y] !== false}
+                            onChange={() => toggleYear(y)}
+                          />
+                          <span>{y}</span>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                </fieldset>
+              )}
+              <fieldset className="panel-date-fieldset">
+                <legend>Month</legend>
+                <ul className="panel-date-checklist panel-date-checklist--months">
+                  {CALENDAR_MONTHS.map((m) => (
+                    <li key={m}>
+                      <label className="panel-date-check">
+                        <input
+                          type="checkbox"
+                          checked={enabledMonths[m] !== false}
+                          onChange={() => toggleMonth(m)}
+                        />
+                        <span>{MONTH_SHORT[m - 1]}</span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              </fieldset>
+            </div>
+          )}
 
         {layerId && layers.find((l) => l.id === layerId)?.has_geojson && rawGeojson ? (
           <p className="muted map-point-count" aria-live="polite">

@@ -250,6 +250,58 @@
   font-size: 0.8rem;
 }
 
+.panel-date-filters {
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.panel-date-filters-head {
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 6px;
+}
+
+.panel-date-fieldset {
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 6px 8px 8px;
+  margin: 0 0 8px;
+}
+
+.panel-date-fieldset legend {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #555;
+  padding: 0 4px;
+}
+
+.panel-date-checklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.panel-date-checklist--months {
+  max-height: none;
+}
+
+.panel-date-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.panel-date-check input {
+  margin: 0;
+}
+
 .panel-head {
   display: flex;
   align-items: flex-start;

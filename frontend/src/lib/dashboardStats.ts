@@ -1,16 +1,59 @@
 import type { Feature, FeatureCollection } from "geojson";
 import { deriveStateFromLocation } from "./indiaStates";
 
+/** Reject bogus years from mis-parsed numeric dates (e.g. 8019 from 8-digit strings). */
+function isPlausibleNewsYear(y: number): boolean {
+  return y >= 1990 && y <= 2100;
+}
+
 export function parseYearFromProps(props: Record<string, unknown>): number | null {
   const ed = props.event_date ?? props.pub_date;
   const s = ed === null || ed === undefined ? "" : String(ed).trim();
   if (!s) return null;
   const iso = s.match(/^(\d{4})-\d{2}-\d{2}/);
-  if (iso) return parseInt(iso[1], 10);
+  if (iso) {
+    const y = parseInt(iso[1], 10);
+    if (isPlausibleNewsYear(y)) return y;
+  }
   const ymd = s.match(/^(\d{4})\d{4}T/);
-  if (ymd) return parseInt(ymd[1], 10);
+  if (ymd) {
+    const y = parseInt(ymd[1], 10);
+    if (isPlausibleNewsYear(y)) return y;
+  }
   const four = s.match(/\b(19|20)\d{2}\b/);
   if (four) return parseInt(four[0], 10);
+  return null;
+}
+
+/**
+ * Calendar year and month from ``event_date`` or ``pub_date`` (ISO, GDELT 8-digit date, or year-only).
+ * Month is 1–12 when parseable; ``null`` when only the year could be inferred.
+ */
+export function parseYearMonthFromProps(
+  props: Record<string, unknown>,
+): { year: number; month: number | null } | null {
+  const ed = props.event_date ?? props.pub_date;
+  const s = ed === null || ed === undefined ? "" : String(ed).trim();
+  if (!s) return null;
+  const iso = s.match(/^(\d{4})-(\d{2})-\d{2}/);
+  if (iso) {
+    const y = parseInt(iso[1], 10);
+    const mo = parseInt(iso[2], 10);
+    if (mo >= 1 && mo <= 12 && isPlausibleNewsYear(y)) return { year: y, month: mo };
+  }
+  const gdelt8 = s.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (gdelt8) {
+    const y = parseInt(gdelt8[1], 10);
+    const mo = parseInt(gdelt8[2], 10);
+    if (mo >= 1 && mo <= 12 && isPlausibleNewsYear(y)) return { year: y, month: mo };
+  }
+  if (/^\d{14}$/.test(s)) {
+    const y = parseInt(s.slice(0, 4), 10);
+    const mo = parseInt(s.slice(4, 6), 10);
+    if (mo >= 1 && mo <= 12 && isPlausibleNewsYear(y)) return { year: y, month: mo };
+  }
+  const yOnly = parseYearFromProps(props);
+  if (yOnly !== null) return { year: yOnly, month: null };
   return null;
 }
 
